@@ -25,6 +25,11 @@ io.on('connection', (socket) => {
     socket.on('payment-instruction', (data) => {
         io.emit('receive-instruction', data);
     });
+    // Puente para imprimir desde celulares
+    socket.on('impresion-remota', (htmlDelTicket) => {
+        // Recibe la orden de un mesero y la retransmite a la computadora central
+        io.emit('ejecutar-impresion-pc', htmlDelTicket);
+    });
 });
 
 app.use('/api/catalog', catalogRoutes);

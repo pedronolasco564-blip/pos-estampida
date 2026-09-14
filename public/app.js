@@ -924,50 +924,57 @@ function closeTicketModal() {
 }
 
 async function printTicket() { 
-    // 1. Extraemos solo el diseño del ticket (sin el fondo negro del sistema POS)
     const ticketContent = document.getElementById('ticket-content').innerHTML;
     
-    // 2. Creamos una ventana invisible temporal
-    const printWindow = window.open('', '_blank', 'width=350,height=600');
+    // 🚀 MAGIA INALÁMBRICA: Si estamos en el celular (por IP), enviamos el ticket por Wi-Fi a la caja.
+    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
+        socket.emit('impresion-remota', ticketContent);
+        return; // El celular termina su trabajo aquí sin abrir diálogos de PDF
+    }
+
+    // 🖨️ MODO PC (Caja): Imprime físicamente usando un iframe invisible
+    let printFrame = document.getElementById('print-frame');
+    if (!printFrame) {
+        printFrame = document.createElement('iframe');
+        printFrame.id = 'print-frame';
+        printFrame.style.display = 'none';
+        document.body.appendChild(printFrame);
+    }
     
-    // 3. Inyectamos el formato estricto para el papel de 80mm de la Epson
-    printWindow.document.write(`
+    const frameDoc = printFrame.contentWindow.document;
+    frameDoc.open();
+    frameDoc.write(`
         <!DOCTYPE html>
         <html>
         <head>
             <title>Ticket_Estampida</title>
             <style>
-                @page { margin: 0; } /* Elimina los márgenes blancos que pone Windows */
-                body { 
-                    margin: 0; 
-                    padding: 5mm; /* Margen seguro para el rollo térmico */
-                    width: 70mm; /* Adaptado al ancho real de impresión de la Epson */
-                    background: #fff;
-                    
-                    /* EL SECRETO DE LA NITIDEZ TÉRMICA */
-                    color: #000 !important; 
-                    font-weight: bold !important; /* Engrosa la letra base */
-                    -webkit-font-smoothing: none; /* Apaga el suavizado de bordes del navegador */
-                    text-rendering: geometricPrecision; /* Fuerza trazos rectos y puros */
-                }
-                * {
-                    color: #000 !important; /* Asegura que no haya grises por accidente */
-                }
+                @page { margin: 0; } 
+                body { margin: 0; padding: 5mm; width: 70mm; background: #fff; color: #000 !important; font-weight: bold !important; -webkit-font-smoothing: none; text-rendering: geometricPrecision; }
+                * { color: #000 !important; }
             </style>
         </head>
         <body>
             ${ticketContent}
-            <script>
-                window.onload = function() {
-                    window.print(); // Dispara la orden a la impresora
-                    setTimeout(function() { window.close(); }, 500); // Cierra la ventana invisible
-                };
-            </script>
         </body>
         </html>
     `);
-    printWindow.document.close();
+    frameDoc.close();
+
+    // Disparamos la impresión directo a la térmica
+    setTimeout(() => {
+        printFrame.contentWindow.focus();
+        printFrame.contentWindow.print();
+    }, 500);
 }
+
+// 📡 ESCUCHADOR INVISIBLE: La PC de la caja atrapa los tickets de los celulares
+socket.on('ejecutar-impresion-pc', (htmlRemoto) => {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        document.getElementById('ticket-content').innerHTML = htmlRemoto;
+        printTicket(); // Llama a imprimir localmente en la caja
+    }
+});
 
 window.reprintOrder = async function(orderId, tableNumber) { if (!navigator.onLine) { await customAlert('No hay red.', 'error'); return; } try { const response = await fetch(`/api/orders/${orderId}`); const data = await response.json(); if (response.ok) { showReprintTicket(data.order, tableNumber); } else { await customAlert('Error al recuperar el ticket', 'error'); } } catch(e) { await customAlert('Fallo de red.', 'error'); } };
 function showReprintTicket(order, tableNumber) {
