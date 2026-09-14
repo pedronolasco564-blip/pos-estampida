@@ -3,7 +3,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 let printerService = null;
-try { printerService = require('../../printerService'); } catch(e) {}
+try { printerService = require('../services/printerService'); } catch(e) { console.log("Aviso: Módulo de impresora no cargado."); }
 
 const getCorte = (req, res) => {
     const targetDate = req.query.date; 

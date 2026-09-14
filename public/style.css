@@ -131,7 +131,6 @@ header h1 { margin: 0; font-size: 1.1rem; font-weight: bold; letter-spacing: 1px
 @media (min-width: 951px) {
     #action-buttons-container, 
     #payment-buttons-container {
-        display: flex !important;
         flex-direction: column !important;
         gap: 8px !important;
         width: 100%;
@@ -149,7 +148,6 @@ header h1 { margin: 0; font-size: 1.1rem; font-weight: bold; letter-spacing: 1px
 @media (min-width: 951px) {
     #action-buttons-container, 
     #payment-buttons-container {
-        display: flex !important;
         flex-direction: column !important;
         gap: 10px !important;
         width: 100%;

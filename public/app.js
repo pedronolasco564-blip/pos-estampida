@@ -58,7 +58,7 @@ function setView(viewId, pushHistory = true) {
     const target = document.getElementById(viewId);
     if (target) { 
         target.style.opacity = '0';
-        target.style.display = (viewId === 'welcome-view' || viewId === 'pos-view') ? 'flex' : 'block'; 
+        target.style.display = (viewId === 'welcome-view') ? 'flex' : (viewId === 'pos-view' ? '' : 'block'); 
         setTimeout(() => { 
             target.style.transition = 'opacity 0.2s ease-in-out';
             target.style.opacity = '1'; 

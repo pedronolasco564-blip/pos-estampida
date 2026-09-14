@@ -25,15 +25,15 @@ const db = new sqlite3.Database(dbPath, (err) => {
 function initDatabase() {
     db.serialize(() => {
         db.run(`CREATE TABLE IF NOT EXISTS tables (id INTEGER PRIMARY KEY AUTOINCREMENT, table_number TEXT NOT NULL UNIQUE, status TEXT DEFAULT 'LIBRE')`);
-        db.run(`CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL NOT NULL, station TEXT NOT NULL, category TEXT DEFAULT 'GENERAL')`);
+        db.run(`CREATE TABLE IF NOT EXISTS products (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, price REAL NOT NULL, station TEXT NOT NULL, category TEXT DEFAULT 'GENERAL', is_available INTEGER DEFAULT 1)`);
         
         db.run(`CREATE TABLE IF NOT EXISTS orders (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, table_id INTEGER, waiter_name TEXT NOT NULL, status TEXT DEFAULT 'ABIERTA',
-            total REAL DEFAULT 0, remaining_balance REAL DEFAULT 0, tip_amount REAL DEFAULT 0, discount_amount REAL DEFAULT 0,
-            payment_method TEXT, amount_paid REAL, change_amount REAL, 
-            needs_invoice INTEGER DEFAULT 0, invoice_done INTEGER DEFAULT 0,
-            created_at DATETIME DEFAULT CURRENT_TIMESTAMP, closed_at DATETIME,
-            FOREIGN KEY (table_id) REFERENCES tables(id)
+        id INTEGER PRIMARY KEY AUTOINCREMENT, table_id INTEGER, waiter_name TEXT NOT NULL, status TEXT DEFAULT 'ABIERTA',
+        total REAL DEFAULT 0, remaining_balance REAL DEFAULT 0, tip_amount REAL DEFAULT 0, discount_amount REAL DEFAULT 0,
+        payment_method TEXT, amount_paid REAL, change_amount REAL, 
+        needs_invoice INTEGER DEFAULT 0, invoice_done INTEGER DEFAULT 0, guests INTEGER DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP, closed_at DATETIME,
+        FOREIGN KEY (table_id) REFERENCES tables(id)
         )`);
         
         // Parche de seguridad para actualizar la tabla si ya existe

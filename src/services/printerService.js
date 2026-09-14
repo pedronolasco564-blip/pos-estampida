@@ -1,4 +1,4 @@
-const db = require('./src/config/db');
+const db = require('../config/db');
 const ThermalPrinter = require("node-thermal-printer").printer;
 const PrinterTypes = require("node-thermal-printer").types;
 
@@ -7,7 +7,7 @@ const PrinterTypes = require("node-thermal-printer").types;
 // ========================================================
 const printer = new ThermalPrinter({
   type: PrinterTypes.EPSON,       // El protocolo EPSON (ESC/POS) es el estándar para casi todas
-  interface: 'printer:CajaEstampida',    // <--- AQUÍ PONDRÁS EL NOMBRE DE LA IMPRESORA EN WINDOWS
+  interface: '//localhost/CajaEstampida',    // <--- AQUÍ PONDRÁS EL NOMBRE DE LA IMPRESORA EN WINDOWS
   characterSet: 'PC858_LATIN',    // Para que salgan bien las 'ñ' y acentos
   removeSpecialCharacters: false,
   lineCharacter: "=",
