@@ -968,13 +968,7 @@ async function printTicket() {
     }, 500);
 }
 
-// 📡 ESCUCHADOR INVISIBLE: La PC de la caja atrapa los tickets de los celulares
-socket.on('ejecutar-impresion-pc', (htmlRemoto) => {
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        document.getElementById('ticket-content').innerHTML = htmlRemoto;
-        printTicket(); // Llama a imprimir localmente en la caja
-    }
-});
+
 
 window.reprintOrder = async function(orderId, tableNumber) { if (!navigator.onLine) { await customAlert('No hay red.', 'error'); return; } try { const response = await fetch(`/api/orders/${orderId}`); const data = await response.json(); if (response.ok) { showReprintTicket(data.order, tableNumber); } else { await customAlert('Error al recuperar el ticket', 'error'); } } catch(e) { await customAlert('Fallo de red.', 'error'); } };
 function showReprintTicket(order, tableNumber) {
@@ -1793,3 +1787,10 @@ window.filtrarCatalogo = function() {
         fila.style.display = textoFila.includes(input) ? '' : 'none';
     });
 };
+// 📡 ESCUCHADOR INVISIBLE: La PC de la caja atrapa los tickets de los celulares
+socket.on('ejecutar-impresion-pc', (htmlRemoto) => {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+        document.getElementById('ticket-content').innerHTML = htmlRemoto;
+        printTicket(); // Llama a imprimir localmente en la caja
+    }
+});
