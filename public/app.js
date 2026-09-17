@@ -655,6 +655,7 @@ document.getElementById('btn-apply-discount').onclick = async () => {
     try { const response = await fetch(`/api/orders/${currentOrderId}/discount`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin, discount_amount: parseFloat(discount) }) }); if (response.ok) { await customAlert('Descuento aplicado correctamente.', 'success'); selectTable({ id: currentTableId, table_number: currentTableSpan.textContent, status: 'OCUPADA' }); loadTables(); } else { const err = await response.json(); await customAlert(`Error: ${err.error}`, 'error'); } } catch (error) { await customAlert('Fallo de red.', 'error'); }
 };
 
+
 // ========================================================
 // SISTEMA INTELIGENTE DE COBRO EN TIEMPO REAL
 // ========================================================
