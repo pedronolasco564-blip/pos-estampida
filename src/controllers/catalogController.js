@@ -2,8 +2,20 @@ const db = require('../config/db');
 const crypto = require('crypto');
 
 
-
-const getTables = (req, res) => { const query = `SELECT t.*, (SELECT SUM(o.total) FROM orders o WHERE o.table_id = t.id AND o.status = 'ABIERTA') as current_total, (SELECT remaining_balance FROM orders o WHERE o.table_id = t.id AND o.status = 'ABIERTA') as remaining_balance, (SELECT CAST((julianday('now') - julianday(created_at)) * 24 * 60 AS INTEGER) FROM orders o WHERE o.table_id = t.id AND o.status = 'ABIERTA') as minutes_open FROM tables t`; db.all(query, [], (err, tables) => { if (err) return res.status(500).json({ error: err.message }); res.json({tables}); }); };
+const getTables = (req, res) => { 
+    const query = `
+        SELECT t.*, 
+        (SELECT SUM(o.total) FROM orders o WHERE o.table_id = t.id AND o.status = 'ABIERTA') as current_total, 
+        (SELECT remaining_balance FROM orders o WHERE o.table_id = t.id AND o.status = 'ABIERTA') as remaining_balance, 
+        (SELECT CAST((julianday('now') - julianday(created_at)) * 24 * 60 AS INTEGER) FROM orders o WHERE o.table_id = t.id AND o.status = 'ABIERTA') as minutes_open,
+        (SELECT id FROM orders o WHERE o.table_id = t.id AND o.status = 'ABIERTA' LIMIT 1) as active_folio 
+        FROM tables t
+    `; 
+    db.all(query, [], (err, tables) => { 
+        if (err) return res.status(500).json({ error: err.message }); 
+        res.json({tables}); 
+    }); 
+};
 const createTable = (req, res) => { db.run(`INSERT INTO tables (table_number) VALUES (?)`, [req.body.table_number], function(err) { req.app.get('io').emit('update-tables'); res.json({message: 'Mesa creada'}); }); };
 const deleteTable = (req, res) => { db.run(`DELETE FROM tables WHERE id = ?`, [req.params.id], function(err) { req.app.get('io').emit('update-tables'); res.json({message: 'Mesa eliminada'}); }); };
 

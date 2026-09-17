@@ -38,17 +38,25 @@ const getCorte = (req, res) => {
                 ventasPorMesero[o.waiter_name].tickets += 1;
 
                 let propina = o.tip_amount || 0;
-                if (o.payment_method === 'EFECTIVO') {
-                    totalEfectivo += o.total; propinasEfectivo += propina;
-                } else {
-                    totalTarjeta += o.total; propinasTarjeta += propina;
+            
+                // 💡 REPARACIÓN: Sumar el dinero de sus alcancías correctas
+                let pagadoEfectivo = o.cash_amount || 0;
+                let pagadoTarjeta = o.card_amount || 0;
+
+                if (pagadoEfectivo === 0 && pagadoTarjeta === 0) {
+                if (o.payment_method === 'EFECTIVO') pagadoEfectivo = o.total;
+                else pagadoTarjeta = o.total;
                 }
 
-                // === CLASIFICADOR DE MESAS ===
-                if (o.table_number && o.table_number.toUpperCase().includes('LLEVAR')) {
-                    totalLlevar += o.total;
-                } else {
-                    totalComedor += o.total;
+                totalEfectivo += pagadoEfectivo;
+                totalTarjeta += pagadoTarjeta;
+
+                if (o.payment_method === 'EFECTIVO') propinasEfectivo += propina;
+                else propinasTarjeta += propina;
+
+                // ✨ EL TOQUE MÁGICO PARA LA TABLA VISUAL:
+                if (pagadoEfectivo > 0 && pagadoTarjeta > 0) {
+                o.payment_method = 'MIXTO';
                 }
             });
 
@@ -93,8 +101,26 @@ const printCorte = (req, res) => {
                     ventasPorMesero[o.waiter_name].tickets += 1;
 
                     let propina = o.tip_amount || 0;
-                    if (o.payment_method === 'EFECTIVO') { totalEfectivo += o.total; propinasEfectivo += propina; } 
-                    else { totalTarjeta += o.total; propinasTarjeta += propina; }
+                    
+                    // 💡 REPARACIÓN: Sumar el dinero de sus alcancías correctas
+                    let pagadoEfectivo = o.cash_amount || 0;
+                    let pagadoTarjeta = o.card_amount || 0;
+
+                    if (pagadoEfectivo === 0 && pagadoTarjeta === 0) {
+                        if (o.payment_method === 'EFECTIVO') pagadoEfectivo = o.total;
+                        else pagadoTarjeta = o.total;
+                    }
+
+                    totalEfectivo += pagadoEfectivo;
+                    totalTarjeta += pagadoTarjeta;
+
+                    if (o.payment_method === 'EFECTIVO') propinasEfectivo += propina;
+                    else propinasTarjeta += propina;
+
+                    // ✨ EL TOQUE MÁGICO PARA LA TABLA VISUAL:
+                    if (pagadoEfectivo > 0 && pagadoTarjeta > 0) {
+                        o.payment_method = 'MIXTO';
+                    }
                     
                     // === CLASIFICADOR DE MESAS ===
                     if (o.table_number && o.table_number.toUpperCase().includes('LLEVAR')) {
@@ -171,4 +197,27 @@ const setFondo = (req, res) => {
     });
 };
 
-module.exports = { getCorte, printCorte, backupDatabase, getFondo, setFondo, addExpense };
+const deleteExpense = (req, res) => {
+    const { id } = req.params;
+    const { pin } = req.body;
+    const hash = crypto.createHash('sha256').update(pin || '').digest('hex');
+    
+    db.get(`SELECT value FROM settings WHERE key = 'admin_pin'`, [], (err, row) => {
+        if (err) return res.status(500).json({ error: err.message });
+        if (!row || row.value !== hash) return res.status(403).json({ error: 'PIN INCORRECTO' });
+        
+        db.get(`SELECT * FROM expenses WHERE id = ?`, [id], (err, expense) => {
+            if (!expense) return res.status(404).json({error: 'Gasto no encontrado'});
+            
+            db.run(`DELETE FROM expenses WHERE id = ?`, [id], function(err) {
+                if(err) return res.status(500).json({error: err.message});
+                
+                db.run(`INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`, 
+                    ['ELIMINAR_GASTO', `Se anuló el gasto de $${expense.amount} (${expense.concept})`, 'Admin']);
+                res.json({message: 'Gasto cancelado exitosamente'});
+            });
+        });
+    });
+};
+
+module.exports = { getCorte, printCorte, backupDatabase, getFondo, setFondo, addExpense, deleteExpense };

@@ -58,6 +58,12 @@ function initDatabase() {
 
         db.run(`ALTER TABLE modifiers ADD COLUMN price REAL DEFAULT 0`, () => {});
         db.run(`ALTER TABLE order_items ADD COLUMN extra_price REAL DEFAULT 0`, () => {});
+        db.run(`ALTER TABLE orders ADD COLUMN needs_invoice INTEGER DEFAULT 0`, () => {});
+        db.run(`ALTER TABLE orders ADD COLUMN invoice_done INTEGER DEFAULT 0`, () => {});
+        
+        // 💡 REPARACIÓN: Columnas para rastrear pagos mixtos
+        db.run(`ALTER TABLE orders ADD COLUMN cash_amount REAL DEFAULT 0`, () => {});
+        db.run(`ALTER TABLE orders ADD COLUMN card_amount REAL DEFAULT 0`, () => {});
 
         seedInitialData();
     });

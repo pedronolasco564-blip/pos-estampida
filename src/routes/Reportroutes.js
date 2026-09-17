@@ -6,6 +6,7 @@ router.get('/corte', reportController.getCorte);
 router.post('/corte/print', reportController.printCorte);
 router.post('/backup', reportController.backupDatabase); // <- ESTA ES LA PUERTA DEL RESPALDO
 router.post('/expenses', reportController.addExpense);
+router.post('/expenses/:id/delete', reportController.deleteExpense); // 💡 NUEVA
 router.get('/fondo', reportController.getFondo);
 router.post('/fondo', reportController.setFondo);
 

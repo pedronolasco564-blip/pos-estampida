@@ -76,6 +76,7 @@ function setView(viewId, pushHistory = true) {
 }
 
 let currentTableId = null; let currentOrderId = null; let savedOrderItems = []; let newOrderItems = []; let allProducts = []; let lastSelectedWaiter = ''; let currentModifiers = []; let currentRemainingBalance = 0; let selectedItemsToPay = []; let lastPaymentFullyPaid = false; let pendingCancelType = null; let pendingCancelItemId = null; let isReprinting = false; let productClicks = {};
+let desgloseGastosActual = [];
 
 let tableInstructions = {};
 
@@ -325,10 +326,15 @@ async function loadTables() {
                 let mins = table.minutes_open || 0; 
                 let bgColor = 'rgba(0,0,0,0.5)'; if (mins > 40) bgColor = '#900C3F'; else if (mins > 25) bgColor = '#d35400';
                 
+                // ✨ NUEVO: Etiqueta dinámica de Folio (solo aparece si el backend lo manda)
+                const etiquetaFolio = table.active_folio 
+                    ? `<div style="background: #e74c3c; color: #fff; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin: 4px 0 0 0;">Folio: #${table.active_folio}</div>` 
+                    : '';
+
                 if (displayTotal > 0) { 
-                    btn.innerHTML = `${textoMesa}<div style="font-size: 10px; background: ${bgColor}; padding: 2px 6px; border-radius: 8px; margin: 6px 0; color: white;">⏱️ ${mins} min</div><span style="font-size: 14px; color: #f1c40f; font-weight: 900;">$${displayTotal.toFixed(2)}</span>`; 
+                    btn.innerHTML = `${textoMesa}${etiquetaFolio}<div style="font-size: 10px; background: ${bgColor}; padding: 2px 6px; border-radius: 8px; margin: 4px 0 6px 0; color: white;">⏱️ ${mins} min</div><span style="font-size: 14px; color: #f1c40f; font-weight: 900;">$${displayTotal.toFixed(2)}</span>`; 
                 } else { 
-                    btn.innerHTML = `${textoMesa}<div style="font-size: 10px; background: ${bgColor}; padding: 2px 6px; border-radius: 8px; margin: 6px 0; color: white;">⏱️ ${mins} min</div>`; 
+                    btn.innerHTML = `${textoMesa}${etiquetaFolio}<div style="font-size: 10px; background: ${bgColor}; padding: 2px 6px; border-radius: 8px; margin: 4px 0 6px 0; color: white;">⏱️ ${mins} min</div>`; 
                 }
             } else { 
                 btn.innerHTML = `${textoMesa}`; 
@@ -389,23 +395,11 @@ async function selectTable(table) {
         if (lastSelectedWaiter) waiterSelect.value = lastSelectedWaiter; 
         
         if (table.table_number.toUpperCase().includes('LLEVAR')) {
-            currentPax = 1; // Un pedido para llevar siempre cuenta como 1 persona
-            setTimeout(async () => {
-                const nombre = await customPrompt('Nombre del cliente para este pedido (Opcional):', 'text', '');
-                if (nombre) {
-                    clienteLlevarActual = nombre.toUpperCase();
-                    currentTableSpan.textContent = `${table.table_number} (${clienteLlevarActual})`;
-                } else {
-                    clienteLlevarActual = null;
-                }
-            }, 100);
+            currentPax = 1; 
+            clienteLlevarActual = null; // Sin interrupciones para Llevar
         } else {
             clienteLlevarActual = null;
-            // === NUEVA PREGUNTA PARA EL PAX ===
-            setTimeout(async () => {
-                const paxStr = await customPrompt('¿Cuántas personas son? (PAX):', 'number', '1');
-                currentPax = paxStr ? parseInt(paxStr) : 1;
-            }, 100);
+            currentPax = 1; // 💡 Asume 1 persona por defecto en Comedor para no estorbar
         }
     }
     updateOrderUI();
@@ -457,6 +451,17 @@ document.getElementById('btn-confirm-cancel').onclick = async () => {
     }
 };
 
+window.editClientName = async function() {
+    const nombre = await customPrompt('Nombre del cliente para este pedido:', 'text', clienteLlevarActual || '');
+    if (nombre) {
+        clienteLlevarActual = nombre.toUpperCase();
+        // Actualiza el título de la mesa arriba
+        const baseName = currentTableSpan.textContent.split(' (')[0]; 
+        currentTableSpan.textContent = `${baseName} (${clienteLlevarActual})`;
+        updateOrderUI();
+    }
+};
+
 window.editPax = async function() {
     const newPaxStr = await customPrompt(`PAX Actual: ${currentPax}. Ingrese el nuevo número de personas:`, 'number', currentPax);
     if (!newPaxStr) return;
@@ -483,14 +488,26 @@ function updateOrderUI() {
     let rawItemsSum = 0; // Suma cruda solo para cuando es una mesa nueva sin guardar
     let newItemsTotal = 0;
 
-    // === NUEVO CAJÓN VISUAL PARA EL PAX ===
+   // === CAJÓN VISUAL INTELIGENTE (PAX o LLEVAR) ===
     if (currentTableId) {
-        orderItemsList.innerHTML += `
-        <div style="background: #2c2c2c; padding: 8px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border: 1px solid #444;">
-            <span style="color: #bdc3c7; font-weight: bold;">👥 Personas (PAX): <span style="color: #fff; font-size: 14px;">${currentPax}</span></span>
-            <button onclick="editPax()" style="background: #3498db; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-weight: bold;">✏️ Cambiar</button>
-        </div>`;
+        const esLlevar = currentTableSpan.textContent.toUpperCase().includes('LLEVAR');
+        
+        if (esLlevar) {
+            const nombreMostrar = clienteLlevarActual ? clienteLlevarActual : 'Sin Nombre (Toca Nombre ->)';
+            orderItemsList.innerHTML += `
+            <div style="background: #2c2c2c; padding: 8px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border: 1px solid #444;">
+                <span style="color: #bdc3c7; font-weight: bold;">🛍️ Cliente: <span style="color: #f1c40f; font-size: 14px;">${nombreMostrar}</span></span>
+                <button onclick="editClientName()" style="background: #e67e22; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-weight: bold;">✏️ Nombre</button>
+            </div>`;
+        } else {
+            orderItemsList.innerHTML += `
+            <div style="background: #2c2c2c; padding: 8px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border: 1px solid #444;">
+                <span style="color: #bdc3c7; font-weight: bold;">👥 Personas (PAX): <span style="color: #fff; font-size: 14px;">${currentPax}</span></span>
+                <button onclick="editPax()" style="background: #3498db; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-weight: bold;">✏️ Cambiar</button>
+            </div>`;
+        }
     }
+    
     // =======================================
 
     // 1. Dibujamos los items ya guardados en el servidor
@@ -658,18 +675,23 @@ function calcularCambioEnVivo() {
     const displayTexto = document.getElementById('change-display-text');
     const btnConfirmar = document.getElementById('btn-confirm-pay');
 
-    const diferencia = montoIngresado - esperado;
+    // 💡 REPARACIÓN MATEMÁTICA: Redondeo estricto a 2 decimales
+    const diferencia = Math.round((montoIngresado - esperado) * 100) / 100;
 
     if (diferencia < 0) {
-        displayTexto.innerHTML = `⚠️ FALTAN: $${Math.abs(diferencia).toFixed(2)}`;
-        displayTexto.style.color = '#e74c3c'; // Rojo peligro
-        btnConfirmar.style.opacity = '0.5';
-        btnConfirmar.style.pointerEvents = 'none'; // Bloquea el botón
+        displayTexto.innerHTML = `⚠️ ABONO (Restan: $${Math.abs(diferencia).toFixed(2)})`;
+        displayTexto.style.color = '#f39c12'; // Color naranja (alerta visual)
+        
+        // 💡 SOLUCIÓN: Botón 100% encendido y desbloqueado para permitir pagos mixtos
+        btnConfirmar.style.opacity = '1';
+        btnConfirmar.style.pointerEvents = 'auto'; 
     } else {
         displayTexto.innerHTML = diferencia === 0 ? '✅ PAGO EXACTO' : `💵 CAMBIO: $${diferencia.toFixed(2)}`;
         displayTexto.style.color = '#2ecc71'; // Verde seguro
+        
+        // Botón encendido
         btnConfirmar.style.opacity = '1';
-        btnConfirmar.style.pointerEvents = 'auto'; // Desbloquea el botón
+        btnConfirmar.style.pointerEvents = 'auto'; 
     }
 }
 
@@ -751,15 +773,28 @@ document.getElementById('btn-confirm-pay').onclick = async () => {
     const amountPaid = parseFloat(inputAmountPaid.value); const method = document.getElementById('payment-method').value; const tipAmount = parseFloat(document.getElementById('tip-amount').value) || 0; let requireInvoice = false; const invoiceCheckbox = document.getElementById('require-invoice'); if (invoiceCheckbox) requireInvoice = invoiceCheckbox.checked;
     
     const esperado = getMontoEsperado();
-    if (isNaN(amountPaid) || amountPaid < esperado) { 
-        await customAlert('El monto recibido no cubre la cuenta.', 'error'); return; 
-    } 
+    // 💡 REPARACIÓN: Permitimos que pongan menos dinero para registrar un "Abono" o "Pago Mixto"
+    if (isNaN(amountPaid) || amountPaid <= 0) { 
+        await customAlert('Ingrese un monto válido.', 'error'); return; 
+    }
     if (!navigator.onLine) { await customAlert('No hay red.', 'error'); return; }
+
+    // 🛡️ INICIO DEL ESCUDO ANTI-DOBLE CLIC
+    const btnCobrar = document.getElementById('btn-confirm-pay');
+    const textoOriginal = btnCobrar.textContent;
+    btnCobrar.style.pointerEvents = 'none'; // Desactiva el clic
+    btnCobrar.style.opacity = '0.5';
+    btnCobrar.textContent = '⏳ COBRANDO...';
 
     try { 
         const response = await fetch(`/api/orders/${currentOrderId}/pay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payment_method: method, amount_paid: amountPaid, items_to_pay: selectedItemsToPay, tip_amount: tipAmount, needs_invoice: requireInvoice }) });
         const result = await response.json(); 
         
+        // 🛡️ DEVOLVER EL BOTÓN A LA NORMALIDAD DESPUÉS DE LA RESPUESTA
+        btnCobrar.style.pointerEvents = 'auto';
+        btnCobrar.style.opacity = '1';
+        btnCobrar.textContent = textoOriginal;
+
         if (response.ok) { 
             paymentPanel.style.display = 'none'; 
             document.getElementById('items-to-pay-container').style.display = 'none'; 
@@ -769,7 +804,12 @@ document.getElementById('btn-confirm-pay').onclick = async () => {
             selectedItemsToPay = []; 
             if (result.fully_paid) { delete tableInstructions[currentTableId]; socket.emit('payment-instruction', { tableId: currentTableId, clear: true }); }
         } else { await customAlert(`Error: ${result.error}`, 'error'); } 
-    } catch (error) { await customAlert('Fallo de red.', 'error'); }
+    } catch (error) { 
+        btnCobrar.style.pointerEvents = 'auto';
+        btnCobrar.style.opacity = '1';
+        btnCobrar.textContent = textoOriginal;
+        await customAlert('Fallo de red.', 'error'); 
+    }
 };
 
 function showTicket(amountPaid, change, method, fullyPaid, remainingBalance, tipAmount = 0, orderIdNum, requireInvoice = false) {
@@ -1094,7 +1134,7 @@ async function loadCorteData() {
     
     if (response.ok) {
         const sum = data.summary;
-        
+        desgloseGastosActual = sum.desglose_gastos || []; // 💡 Guardamos los gastos en la memoria
         document.getElementById('corte-total').textContent = sum.total_general.toFixed(2); 
         document.getElementById('corte-efectivo').textContent = sum.total_efectivo.toFixed(2);
         document.getElementById('corte-tarjeta').textContent = sum.total_tarjeta.toFixed(2);
@@ -1794,3 +1834,50 @@ socket.on('ejecutar-impresion-pc', (htmlRemoto) => {
         printTicket(); // Llama a imprimir localmente en la caja
     }
 });
+window.verListaGastos = function() {
+    const container = document.getElementById('gastos-list-container');
+    container.innerHTML = '';
+    
+    if (desgloseGastosActual.length === 0) {
+        container.innerHTML = '<p style="text-align: center; color: #7f8c8d;">No hay retiros registrados en esta fecha.</p>';
+    } else {
+        desgloseGastosActual.forEach(g => {
+            // Se dibuja cada gasto con un bote de basura para eliminar
+            container.innerHTML += `
+                <div style="background: #2c2c2c; padding: 10px; margin-bottom: 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #e74c3c;">
+                    <div>
+                        <strong style="color: #fff; font-size: 14px;">${g.concept.toUpperCase()}</strong><br>
+                        <small style="color: #bdc3c7;">${g.category} - ${g.created_at.split(' ')[1] || ''}</small>
+                    </div>
+                    <div style="display: flex; align-items: center; gap: 10px;">
+                        <strong style="color: #e74c3c; font-size: 16px;">$${g.amount.toFixed(2)}</strong>
+                        <button onclick="eliminarGasto(${g.id})" style="background: transparent; border: none; font-size: 18px; cursor: pointer;" title="Eliminar Gasto">🗑️</button>
+                    </div>
+                </div>
+            `;
+        });
+    }
+    document.getElementById('gastos-list-modal').style.display = 'flex';
+};
+
+window.eliminarGasto = async function(id) {
+    const pin = await customPrompt('Seguridad: Ingrese PIN de Administrador para anular este gasto:', 'password');
+    if (!pin) return;
+    
+    try {
+        const res = await fetch(`/api/reports/expenses/${id}/delete`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin })
+        });
+        
+        if (res.ok) {
+            await customAlert('Gasto anulado exitosamente.', 'success');
+            document.getElementById('gastos-list-modal').style.display = 'none';
+            loadCorteData(); // Refresca las sumas del corte automáticamente
+        } else {
+            const err = await res.json();
+            await customAlert(err.error, 'error');
+        }
+    } catch(e) { await customAlert('Error de red', 'error'); }
+};

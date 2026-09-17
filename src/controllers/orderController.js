@@ -50,10 +50,17 @@ const createOrder = (req, res) => {
         db.run(`INSERT INTO orders (table_id, waiter_name, guests) VALUES (?, ?, ?)`, [table_id, waiter_name, guests], function(err) {
             if (err) return res.status(500).json({ error: err.message });
             const orderId = this.lastID;
-            const stmt = db.prepare(`INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) VALUES (?, ?, ?, ?, ?, ?, 0)`);
-            items.forEach(item => stmt.run(orderId, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0));
-            stmt.finalize();
-            updateOrderTotal(orderId);
+            
+            // 🛡️ REPARACIÓN: db.serialize obliga a SQLite a hacer una fila india perfecta.
+            // Primero guarda TODOS los platillos sin falta, y HASTA QUE TERMINA, calcula el total.
+            db.serialize(() => {
+                const stmt = db.prepare(`INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) VALUES (?, ?, ?, ?, ?, ?, 0)`);
+                items.forEach(item => stmt.run(orderId, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0));
+                stmt.finalize();
+                
+                // Ahora sí, con la certeza de que no falta ningún platillo, suma.
+                updateOrderTotal(orderId);
+            });
             
             db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, 
                 ['CREAR_ORDEN', `Orden #${orderId} abierta en Mesa ID ${table_id}${printNote}`, waiter_name]);
@@ -146,23 +153,36 @@ const payOrder = (req, res) => {
 
         processItems().then(() => {
             let currentBalance = (order.remaining_balance !== null && order.remaining_balance !== undefined) ? order.remaining_balance : order.total;
-            const newBalance = currentBalance - amount_paid;
             
-            if (newBalance <= 0) {
-                const change = Math.abs(newBalance);
-                // 🛑 AQUÍ ESTÁ EL BLINDAJE DE ZONA HORARIA A -6 HORAS EXACTAS
-                db.run(`UPDATE orders SET status = 'PAGADA', payment_method = ?, amount_paid = ?, change_amount = ?, remaining_balance = 0, tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ?, closed_at = datetime('now', '-6 hours') WHERE id = ?`, 
-                    [payment_method, amount_paid, change, tip_amount, invoiceFlag, id], function(err) {
+            // Calculamos cuánto del pago realmente cubre la deuda (ignorando el cambio)
+            const isFullyPaid = amount_paid >= currentBalance;
+            const appliedAmount = isFullyPaid ? currentBalance : amount_paid;
+            const change = isFullyPaid ? amount_paid - currentBalance : 0;
+            const newBalance = isFullyPaid ? 0 : currentBalance - amount_paid;
+
+            // Ruteamos el dinero a su columna correspondiente
+            const addCash = payment_method === 'EFECTIVO' ? appliedAmount : 0;
+            const addCard = (payment_method === 'TARJETA' || payment_method === 'TRANSFERENCIA') ? appliedAmount : 0;
+
+            if (isFullyPaid) {
+                db.run(`UPDATE orders SET status = 'PAGADA', payment_method = ?, 
+                        cash_amount = IFNULL(cash_amount, 0) + ?, card_amount = IFNULL(card_amount, 0) + ?,
+                        amount_paid = IFNULL(amount_paid, 0) + ?, change_amount = IFNULL(change_amount, 0) + ?, 
+                        remaining_balance = 0, tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ?, closed_at = datetime('now', '-6 hours') WHERE id = ?`, 
+                    [payment_method, addCash, addCard, amount_paid, change, tip_amount, invoiceFlag, id], function(err) {
                     if (err) return res.status(500).json({ error: err.message });
                     db.run(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
                     req.app.get('io').emit('update-tables');
                     res.json({ message: 'Orden pagada por completo', change, fully_paid: true });
                 });
             } else {
-                db.run(`UPDATE orders SET remaining_balance = ?, tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ? WHERE id = ?`, [newBalance, tip_amount, invoiceFlag, id], function(err) {
+                db.run(`UPDATE orders SET remaining_balance = ?, payment_method = 'MIXTO', 
+                        cash_amount = IFNULL(cash_amount, 0) + ?, card_amount = IFNULL(card_amount, 0) + ?,
+                        tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ? WHERE id = ?`, 
+                    [newBalance, addCash, addCard, tip_amount, invoiceFlag, id], function(err) {
                     if (err) return res.status(500).json({ error: err.message });
                     req.app.get('io').emit('update-tables');
-                    res.json({ message: 'Cobro exitoso', remaining_balance: newBalance, fully_paid: false });
+                    res.json({ message: 'Abono registrado', remaining_balance: newBalance, fully_paid: false });
                 });
             }
         });
@@ -193,13 +213,18 @@ function updateOrderTotal(orderId, callback) {
 const cancelItem = (req, res) => {
     const { orderId, itemId } = req.params; const { pin, reason } = req.body; 
     verifyPin(pin, res, () => {
-        db.get(`SELECT oi.paid, p.name FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.id = ?`, [itemId], (err, item) => {
+        db.get(`SELECT oi.paid, oi.quantity, p.name FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.id = ?`, [itemId], (err, item) => {
             if (!item) return res.status(404).json({ error: 'Platillo no encontrado' });
             if (item.paid === 1) return res.status(400).json({ error: 'Ya fue pagado.' });
             
-            db.run(`DELETE FROM order_items WHERE id = ? AND order_id = ?`, [itemId, orderId], function(err) {
+            // 💡 REPARACIÓN: Si hay varios, solo resta 1. Si es el último, borra el renglón.
+            const query = item.quantity > 1 
+                ? `UPDATE order_items SET quantity = quantity - 1 WHERE id = ? AND order_id = ?`
+                : `DELETE FROM order_items WHERE id = ? AND order_id = ?`;
+
+            db.run(query, [itemId, orderId], function(err) {
                 updateOrderTotal(orderId);
-                db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, ['CANCELAR_PLATILLO', `Se canceló "${item.name}". Motivo: ${reason || 'N/A'}`, 'Admin']);
+                db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, ['CANCELAR_PLATILLO', `Se canceló 1x "${item.name}". Motivo: ${reason || 'N/A'}`, 'Admin']);
                 req.app.get('io').emit('update-tables');
                 res.json({ message: 'Cancelado' });
             });
