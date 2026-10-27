@@ -58,6 +58,9 @@ function initDatabase() {
         // NUEVA TABLA: Sistema de Gastos y Retiros de Caja
         db.run(`CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL NOT NULL, concept TEXT NOT NULL, category TEXT, created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
+        // NUEVA TABLA: Conteo físico de caja por día (billetes/monedas), con fondo para el día siguiente
+        db.run(`CREATE TABLE IF NOT EXISTS cash_counts (count_date TEXT PRIMARY KEY, denominations TEXT NOT NULL, counted REAL NOT NULL, expected REAL NOT NULL, difference REAL NOT NULL, next_fondo REAL, updated_at DATETIME)`);
+
         // NUEVA TABLA: Platillos tomados que aún no se envían a cocina (uno por mesa)
         db.run(`CREATE TABLE IF NOT EXISTS order_drafts (table_id INTEGER PRIMARY KEY, items TEXT NOT NULL, waiter_name TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (table_id) REFERENCES tables(id))`);
 

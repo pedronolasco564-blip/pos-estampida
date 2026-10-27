@@ -16,5 +16,9 @@ router.get('/fondo', reportController.getFondo);
 router.post('/fondo', reportController.setFondo);
 router.get('/audit', reportController.getAuditLogs);
 router.get('/backup-status', reportController.getBackupStatus);
+router.get('/cash-count', reportController.getCashCount);
+router.post('/cash-count', reportController.saveCashCount);
+router.get('/monthly', reportController.getMonthly);
+router.get('/monthly.xlsx', reportController.getMonthlyExcel);
 
 module.exports = router;

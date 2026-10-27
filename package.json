@@ -1,6 +1,6 @@
 {
   "name": "pos-v1-pedro",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "POS La Estampida",
   "main": "electron/main.js",
   "scripts": {
@@ -19,6 +19,7 @@
     "bcrypt": "^6.0.0",
     "dotenv": "^17.4.2",
     "electron-updater": "^6.8.11",
+    "exceljs": "^4.4.0",
     "express": "^5.2.1",
     "express-rate-limit": "^8.7.0",
     "node-thermal-printer": "^4.6.1",

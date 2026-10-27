@@ -18,6 +18,32 @@ function escapeHtml(text) {
     return str.replace(/[&<>"']/g, (c) => map[c]);
 }
 
+// Montos con separador de miles ($4,245.00). Solo para mostrar: nunca se leen de vuelta de la pantalla.
+const fmtMoney = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
+// Fecha AAAA-MM-DD desplazada N días (sin depender de la zona horaria)
+function desplazarFecha(fecha, dias) {
+    const [y, m, d] = fecha.split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d + dias)).toISOString().slice(0, 10);
+}
+const diaSemana = (fecha) => { const [y, m, d] = fecha.split('-').map(Number); return DIAS_SEMANA[new Date(Date.UTC(y, m - 1, d)).getUTCDay()]; };
+
+// Comparativo contra el mismo día de la semana pasada (ej. "▲ 12% vs lunes pasado ($3,780.00)")
+async function pintarComparativo(elId, fecha, totalHoy) {
+    const el = document.getElementById(elId);
+    if (!el) return;
+    try {
+        const res = await fetch(`/api/reports/corte?date=${desplazarFecha(fecha, -7)}`);
+        if (!res.ok) { el.textContent = ''; return; }
+        const prev = (await res.json()).summary.total_general;
+        const dia = diaSemana(fecha);
+        if (!prev) { el.textContent = `Sin ventas el ${dia} anterior`; el.style.color = 'var(--text-muted)'; return; }
+        const pct = Math.round(((totalHoy - prev) / prev) * 100);
+        el.textContent = `${pct >= 0 ? '▲' : '▼'} ${Math.abs(pct)}% vs ${dia} anterior ($${fmtMoney(prev)})`;
+        el.style.color = pct >= 0 ? 'var(--color-success)' : 'var(--color-danger)';
+    } catch (_) { el.textContent = ''; }
+}
+
 let modalCloseTimeout; 
 function showCustomModal({ type = 'info', title = 'Atención', text = '', showInput = false, inputType = 'text', inputValue = '', showCancel = false, choices = null, currentChoice = '' }) {
     return new Promise((resolve) => {
@@ -94,6 +120,7 @@ const adminHubView = document.getElementById('admin-hub-view');
 const adminView = document.getElementById('admin-view'); 
 const corteView = document.getElementById('corte-view'); 
 const auditView = document.getElementById('audit-view');
+const reportView = document.getElementById('report-view');
 
 // ========================================================
 // NAVEGACIÓN Y UX (Transiciones Suaves y Botón Atrás)
@@ -102,7 +129,7 @@ window.addEventListener('popstate', (e) => {
     if (e.state && e.state.view) { setView(e.state.view, false); }
 });
 
-const ADMIN_VIEWS = ['admin-hub-view', 'corte-view', 'admin-view', 'audit-view'];
+const ADMIN_VIEWS = ['admin-hub-view', 'corte-view', 'admin-view', 'audit-view', 'report-view'];
 
 function setView(viewId, pushHistory = true) {
     if(welcomeView) welcomeView.style.display = 'none';
@@ -111,8 +138,9 @@ function setView(viewId, pushHistory = true) {
     if(corteView) corteView.style.display = 'none';
     if(adminView) adminView.style.display = 'none';
     if(auditView) auditView.style.display = 'none';
+    if(reportView) reportView.style.display = 'none';
     
-    const target = document.getElementById(viewId);
+const target = document.getElementById(viewId);
     if (target) { 
         target.style.opacity = '0';
         target.style.display = (viewId === 'welcome-view') ? 'flex' : (viewId === 'pos-view' ? '' : 'block'); 
@@ -369,6 +397,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if(currentViewId === 'corte-view') loadCorteData();
     if(currentViewId === 'admin-view') { switchAdminTab(getAdminTab()); loadAdminProducts(); loadWaiters(); loadModifiers(); }
     if(currentViewId === 'audit-view') loadFullAuditLogs();
+    if(currentViewId === 'report-view') loadMonthlyReport();
 });
 
 const loginModal = document.getElementById('login-modal'); const loginPinInput = document.getElementById('login-pin-input'); const loginErrorMsg = document.getElementById('login-error-msg'); 
@@ -426,6 +455,7 @@ function updateAdminNav() {
     const active = currentViewId === 'admin-hub-view' ? 'inicio'
         : currentViewId === 'corte-view' ? 'corte'
         : currentViewId === 'audit-view' ? 'auditoria'
+        : currentViewId === 'report-view' ? 'reporte'
         : currentViewId === 'admin-view' ? ((tab === 'mesas' || tab === 'seguridad') ? 'ajustes' : 'menu')
         : '';
     document.querySelectorAll('.admin-nav-item[data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === active));
@@ -447,9 +477,72 @@ window.adminNavigate = function(section) {
     else if (section === 'menu') { openSubAdmin('menu'); switchAdminTab('platillos'); }
     else if (section === 'ajustes') { openSubAdmin('menu'); switchAdminTab('mesas'); }
     else if (section === 'auditoria') openSubAdmin('audit');
+    else if (section === 'reporte') { setView('report-view'); loadMonthlyReport(); }
 };
 
-// Efectivo que debe haber físicamente en la caja (misma fórmula en el corte y en el resumen)
+// ========================================================
+// REPORTE DEL MES (un renglón por día, como la hoja de Excel)
+// ========================================================
+window.loadMonthlyReport = async function() {
+    const picker = document.getElementById('report-month');
+    if (!picker.value) picker.value = obtenerFechaLocal().slice(0, 7);
+    const tbody = document.getElementById('report-tbody');
+    tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;">Cargando…</td></tr>';
+    try {
+        const res = await fetch(`/api/reports/monthly?month=${picker.value}`);
+        if (!res.ok) return;
+        const rep = await res.json();
+        const t = rep.totals;
+        document.getElementById('report-title').textContent = `Reporte de ${rep.label}`;
+        document.getElementById('rep-total').textContent = fmtMoney(t.total);
+        document.getElementById('rep-tickets').textContent = `${t.tickets} tickets · ${t.dias_con_venta} ${t.dias_con_venta === 1 ? 'día' : 'días'} con venta`;
+        document.getElementById('rep-efectivo').textContent = fmtMoney(t.efectivo);
+        document.getElementById('rep-tpv').textContent = fmtMoney(t.tpv);
+        document.getElementById('rep-promedio').textContent = fmtMoney(t.promedio_diario);
+        document.getElementById('rep-mejor').textContent = t.mejor_dia ? `Mejor día: ${t.mejor_dia.weekday} ${t.mejor_dia.date.slice(8)} ($${fmtMoney(t.mejor_dia.total)})` : '';
+        document.getElementById('rep-gastos').textContent = fmtMoney(t.gastos);
+        document.getElementById('rep-diferencias').innerHTML = t.dias_contados
+            ? `Faltantes <span class="dif-bad">$${fmtMoney(Math.abs(t.faltantes))}</span> · Sobrantes <span class="dif-warn">$${fmtMoney(t.sobrantes)}</span>`
+            : 'Ningún día con conteo de caja guardado';
+
+        if (rep.days.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" style="text-align:center;">Sin movimientos en este mes</td></tr>';
+        } else {
+            tbody.innerHTML = '';
+            rep.days.forEach(d => {
+                const e = etiquetaDiferencia(d.diferencia);
+                const tr = document.createElement('tr');
+                tr.className = 'report-row';
+                tr.title = 'Abrir el corte de este día';
+                tr.innerHTML = `<td><b>${d.date.slice(8)}</b> <span class="report-weekday">${escapeHtml(d.weekday)}</span></td><td>${d.tickets}</td>
+                    <td>$${fmtMoney(d.efectivo)}</td><td>$${fmtMoney(d.tpv)}</td><td><b>$${fmtMoney(d.total)}</b></td><td>$${fmtMoney(d.gastos)}</td>
+                    <td>$${fmtMoney(d.fondo)}</td><td>$${fmtMoney(d.esperado)}</td><td>${d.contado === null ? '—' : '$' + fmtMoney(d.contado)}</td>
+                    <td><span class="dif-badge ${e.clase}">${e.texto}</span></td>`;
+                tr.onclick = () => { document.getElementById('corte-date-picker').value = d.date; openSubAdmin('corte'); };
+                tbody.appendChild(tr);
+            });
+        }
+        const gtbody = document.getElementById('report-gastos-tbody');
+        gtbody.innerHTML = rep.gastos_por_concepto.length
+            ? rep.gastos_por_concepto.map(g => `<tr><td><b>${escapeHtml(g.concepto)}</b></td><td>${escapeHtml(g.categoria || '')}</td><td>${g.veces}</td><td>$${fmtMoney(g.total)}</td></tr>`).join('')
+            : '<tr><td colspan="4" style="text-align:center;">Sin gastos registrados en este mes</td></tr>';
+    } catch (err) { console.error('Reporte mensual:', err); }
+};
+
+window.descargarExcelMes = async function() {
+    const month = document.getElementById('report-month').value || obtenerFechaLocal().slice(0, 7);
+    try {
+        const res = await fetch(`/api/reports/monthly.xlsx?month=${month}`);
+        if (!res.ok) { await customAlert('No se pudo generar el Excel.', 'error'); return; }
+        const url = URL.createObjectURL(await res.blob());
+        const a = document.createElement('a');
+        a.href = url; a.download = `Ventas_Estampida_${month}.xlsx`;
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+    } catch (_) { await customAlert('Error de red al descargar.', 'error'); }
+};
+
+// Efectivo que debe haber físicamente en la caja(misma fórmula en el corte y en el resumen)
 function calcularEfectivoEsperado(fondo, sum) {
     return fondo + sum.total_efectivo - (sum.total_gastos || 0) - sum.propinas_tarjeta;
 }
@@ -493,14 +586,15 @@ window.loadDashboard = async function() {
         const tables = (await resTables.json()).tables || [];
         const sum = corte.summary;
 
-        document.getElementById('dash-ventas').textContent = sum.total_general.toFixed(2);
+        document.getElementById('dash-ventas').textContent = fmtMoney(sum.total_general);
+        pintarComparativo('dash-compare', hoy, sum.total_general);
         const nTickets = corte.orders.length;
         document.getElementById('dash-tickets').textContent = `${nTickets} ${nTickets === 1 ? 'ticket cerrado' : 'tickets cerrados'}`;
-        document.getElementById('dash-esperado').textContent = calcularEfectivoEsperado(fondo, sum).toFixed(2);
+        document.getElementById('dash-esperado').textContent = fmtMoney(calcularEfectivoEsperado(fondo, sum));
 
         const abiertas = tables.filter(t => t.status === 'OCUPADA');
         const pendiente = (t) => (t.remaining_balance !== null && t.remaining_balance !== undefined) ? t.remaining_balance : (t.current_total || 0);
-        document.getElementById('dash-por-cobrar').textContent = abiertas.reduce((acc, t) => acc + pendiente(t), 0).toFixed(2);
+        document.getElementById('dash-por-cobrar').textContent = fmtMoney(abiertas.reduce((acc, t) => acc + pendiente(t), 0));
         document.getElementById('dash-mesas-abiertas').textContent = `${abiertas.length} ${abiertas.length === 1 ? 'mesa abierta' : 'mesas abiertas'}`;
 
         const drafts = tables.filter(t => t.has_draft).length;
@@ -521,7 +615,7 @@ window.loadDashboard = async function() {
                 row.className = 'dash-row';
                 row.innerHTML = `<span class="dash-row-table">Mesa ${escapeHtml(t.table_number)}</span>
                     <span class="dash-row-meta">${t.status === 'OCUPADA' ? `<span style="color:${color}">● ${mins} min</span> · 👤 ${escapeHtml(t.waiter_name || '—')}` : ''}${t.has_draft ? ' <span class="dash-row-draft">📝 sin enviar</span>' : ''}</span>
-                    <span class="dash-row-total">${t.status === 'OCUPADA' ? '$' + pendiente(t).toFixed(2) : ''}</span>`;
+                    <span class="dash-row-total">${t.status === 'OCUPADA' ? '$' + fmtMoney(pendiente(t)) : ''}</span>`;
                 // Abre la mesa directamente en la caja
                 row.onclick = () => { adminNavigate('caja'); selectTable(t); };
                 list.appendChild(row);
@@ -1878,7 +1972,7 @@ async function loadCorteData() {
     const resFondo = await fetch(`/api/reports/fondo?date=${dateVal}`);
     const dataFondo = await resFondo.json();
     const fondoAmount = dataFondo.fondo || 0;
-    document.getElementById('corte-fondo').textContent = fondoAmount.toFixed(2);
+    document.getElementById('corte-fondo').textContent = fmtMoney(fondoAmount);
 
     const response = await fetch(`/api/reports/corte?date=${dateVal}`); 
     const data = await response.json();
@@ -1886,17 +1980,20 @@ async function loadCorteData() {
     if (response.ok) {
         const sum = data.summary;
         desgloseGastosActual = sum.desglose_gastos || []; // 💡 Guardamos los gastos en la memoria
-        document.getElementById('corte-total').textContent = sum.total_general.toFixed(2); 
-        document.getElementById('corte-efectivo').textContent = sum.total_efectivo.toFixed(2);
-        document.getElementById('corte-tarjeta').textContent = sum.total_tarjeta.toFixed(2);
-        document.getElementById('corte-propinas-tarjeta').textContent = sum.propinas_tarjeta.toFixed(2);
-        document.getElementById('corte-propinas-efectivo').textContent = sum.propinas_efectivo.toFixed(2);
+        document.getElementById('corte-total').textContent = fmtMoney(sum.total_general);
+        document.getElementById('corte-efectivo').textContent = fmtMoney(sum.total_efectivo);
+        document.getElementById('corte-tarjeta').textContent = fmtMoney(sum.total_tarjeta);
+        document.getElementById('corte-propinas-tarjeta').textContent = fmtMoney(sum.propinas_tarjeta);
+        document.getElementById('corte-propinas-efectivo').textContent = fmtMoney(sum.propinas_efectivo);
 
         const totalGastos = sum.total_gastos || 0;
-        document.getElementById('corte-gastos').textContent = totalGastos.toFixed(2);
+        document.getElementById('corte-gastos').textContent = fmtMoney(totalGastos);
 
         const efectivoEsperado = calcularEfectivoEsperado(fondoAmount, sum);
-        document.getElementById('corte-esperado').textContent = efectivoEsperado.toFixed(2);
+        document.getElementById('corte-esperado').textContent = fmtMoney(efectivoEsperado);
+        ultimoEfectivoEsperado = efectivoEsperado;
+        pintarComparativo('corte-compare', dateVal, sum.total_general);
+        pintarEstadoConteo(dateVal);
         
         // === NUEVO DESGLOSE PARA LA DUEÑA (TPV Y LLEVAR) ===
         let totalLlevar = 0; 
@@ -1915,11 +2012,11 @@ async function loadCorteData() {
         <div style="display: flex; gap: 12px; margin-bottom: 20px; width: 100%; flex-wrap: wrap;">
             <div style="background: var(--surface-elevated); padding: 14px 18px; border-radius: var(--radius-md); flex: 1; min-width: 180px; border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-purple); box-shadow: var(--shadow-sm);">
                 <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px;">🛍️ VENTAS PARA LLEVAR</span>
-                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${totalLlevar.toFixed(2)}</h3>
+                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${fmtMoney(totalLlevar)}</h3>
             </div>
             <div style="background: var(--surface-elevated); padding: 14px 18px; border-radius: var(--radius-md); flex: 1; min-width: 180px; border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-success); box-shadow: var(--shadow-sm);">
                 <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px;">🍽️ VENTAS COMEDOR</span>
-                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${totalComedor.toFixed(2)}</h3>
+                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${fmtMoney(totalComedor)}</h3>
             </div>
         </div>
         
@@ -2327,30 +2424,84 @@ window.registrarGasto = async function() {
 // SISTEMA DE ARQUEO DE CAJA (CORTE CIEGO CORPORATIVO)
 // ========================================================
 let arqueoRevelado = false;
+let ultimoEfectivoEsperado = 0;   // lo calcula loadCorteData; el arqueo lo usa directo
+let fondoMananaEditado = false;   // si el usuario escribió el fondo, ya no se sugiere solo
+
+const fechaCorteActual = () => (document.getElementById('corte-date-picker') || {}).value || obtenerFechaLocal();
+const totalMonedasArqueo = () => [...document.querySelectorAll('.arq-input[data-key^="m"]')]
+    .reduce((acc, i) => acc + (parseInt(i.value) || 0) * parseFloat(i.dataset.val), 0);
+
+function etiquetaDiferencia(dif) {
+    if (dif === null || dif === undefined) return { texto: 'Sin contar', clase: 'dif-none' };
+    if (Math.abs(dif) < 0.005) return { texto: 'Exacto', clase: 'dif-ok' };
+    return dif < 0 ? { texto: `Faltante $${fmtMoney(Math.abs(dif))}`, clase: 'dif-bad' } : { texto: `Sobrante $${fmtMoney(dif)}`, clase: 'dif-warn' };
+}
+
+async function pintarEstadoConteo(fecha) {
+    const el = document.getElementById('corte-conteo-estado');
+    if (!el) return;
+    try {
+        const res = await fetch(`/api/reports/cash-count?date=${fecha}`);
+        const c = res.ok ? (await res.json()).count : null;
+        if (!c) { el.innerHTML = 'Caja sin contar todavía'; return; }
+        const e = etiquetaDiferencia(c.difference);
+        el.innerHTML = `Contado: <b>$${fmtMoney(c.counted)}</b> · <span class="${e.clase}">${e.texto}</span>`;
+    } catch (_) { el.textContent = ''; }
+}
+
+window.guardarConteo = async function() {
+    const denominations = {};
+    document.querySelectorAll('.arq-input').forEach(i => { if (parseInt(i.value) > 0) denominations[i.dataset.key] = parseInt(i.value); });
+    const fondoTxt = document.getElementById('arq-fondo-manana').value;
+    const fecha = fechaCorteActual();
+    try {
+        const res = await fetch('/api/reports/cash-count', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ date: fecha, denominations, next_fondo: fondoTxt === '' ? null : parseFloat(fondoTxt) }) });
+        const r = await res.json();
+        if (!res.ok) { await customAlert(r.error || 'No se pudo guardar el conteo.', 'error'); return; }
+        const e = etiquetaDiferencia(r.difference);
+        document.getElementById('arqueo-modal').style.display = 'none';
+        await customAlert(`Contado: <b>$${fmtMoney(r.counted)}</b><br>Esperado: $${fmtMoney(r.expected)}<br><b class="${e.clase}">${e.texto}</b>`
+            + (r.next_fondo !== null ? `<br><br>Fondo para el ${escapeHtml(r.next_date)}: <b>$${fmtMoney(r.next_fondo)}</b>` : ''),
+            r.difference < 0 ? 'warning' : 'success', 'Conteo guardado');
+        loadCorteData();
+    } catch (_) { await customAlert('Error de red al guardar el conteo.', 'error'); }
+};
 let esperadoReal = 0;
 
 window.abrirArqueo = function() {
     arqueoRevelado = false; 
-    esperadoReal = parseFloat(document.getElementById('corte-esperado').textContent) || 0;
+    esperadoReal = ultimoEfectivoEsperado;
     
     document.getElementById('arq-esperado').textContent = '🔒 Oculto';
     document.getElementById('arq-diferencia').textContent = '🔒 Oculto';
     document.getElementById('arq-diferencia').style.color = '#7f8c8d';
     
-    const memoriaBilletes = JSON.parse(localStorage.getItem('memoriaArqueo')) || {};
-    
+    let memoriaBilletes = {};
+    try { memoriaBilletes = JSON.parse(localStorage.getItem('memoriaArqueo')) || {}; } catch (_) {}
+
     document.querySelectorAll('.arq-input').forEach(input => {
-        const valorCaja = input.dataset.val;
-        if (memoriaBilletes[valorCaja] !== undefined) {
-            input.value = memoriaBilletes[valorCaja];
-        } else {
-            input.value = '';
-        }
+        const clave = input.dataset.key;
+        input.value = memoriaBilletes[clave] !== undefined ? memoriaBilletes[clave] : '';
     });
 
-    calcularArqueo(); 
+    fondoMananaEditado = false;
+    document.getElementById('arq-fondo-manana').value = '';
+    document.getElementById('arq-guardado').textContent = '';
+    calcularArqueo();
     document.getElementById('arqueo-modal').style.display = 'flex';
+
+    // Si ese día ya se guardó un conteo, se carga para revisarlo o corregirlo
+    fetch(`/api/reports/cash-count?date=${fechaCorteActual()}`).then(r => r.ok ? r.json() : null).then(data => {
+        const c = data && data.count;
+        if (!c) return;
+        document.querySelectorAll('.arq-input').forEach(i => { i.value = c.denominations[i.dataset.key] || ''; });
+        if (c.next_fondo !== null) { document.getElementById('arq-fondo-manana').value = c.next_fondo; fondoMananaEditado = true; }
+        document.getElementById('arq-guardado').textContent = `Ya hay un conteo guardado de este día ($${fmtMoney(c.counted)}). Si guardas de nuevo, lo reemplaza.`;
+        calcularArqueo();
+    }).catch(() => {});
 };
+document.addEventListener('input', (e) => { if (e.target && e.target.id === 'arq-fondo-manana') fondoMananaEditado = true; });
 
 window.calcularArqueo = function() {
     let totalFisico = 0;
@@ -2362,15 +2513,20 @@ window.calcularArqueo = function() {
         totalFisico += cantidad * valor;
         
         if (input.value !== '') {
-            memoriaActual[valor] = input.value;
+            memoriaActual[input.dataset.key] = input.value;
         }
     });
-    
-    localStorage.setItem('memoriaArqueo', JSON.stringify(memoriaActual));
-    document.getElementById('arq-total-fisico').textContent = totalFisico.toFixed(2);
+
+    try { localStorage.setItem('memoriaArqueo', JSON.stringify(memoriaActual)); } catch (_) {}
+    document.getElementById('arq-total-fisico').textContent = fmtMoney(totalFisico);
+
+    // Sugerencia de fondo para mañana: lo que hay en monedas (como en la hoja de Excel)
+    const monedas = totalMonedasArqueo();
+    document.getElementById('arq-fondo-hint').textContent = `Sugerido: $${fmtMoney(monedas)} (total en monedas). Mañana aparecerá como fondo inicial.`;
+    if (!fondoMananaEditado) document.getElementById('arq-fondo-manana').value = monedas ? monedas : '';
     
     if (arqueoRevelado) {
-        document.getElementById('arq-esperado').textContent = esperadoReal.toFixed(2);
+        document.getElementById('arq-esperado').textContent = fmtMoney(esperadoReal);
         const diferencia = totalFisico - esperadoReal;
         const difSpan = document.getElementById('arq-diferencia');
         
@@ -2378,10 +2534,10 @@ window.calcularArqueo = function() {
             difSpan.textContent = "✅ CUADRE PERFECTO";
             difSpan.style.color = "#27ae60"; 
         } else if (diferencia > 0) {
-            difSpan.textContent = `⚠️ SOBRAN $${diferencia.toFixed(2)}`;
+            difSpan.textContent = `⚠️ SOBRAN $${fmtMoney(diferencia)}`;
             difSpan.style.color = "#f1c40f"; 
         } else {
-            difSpan.textContent = `❌ FALTAN $${Math.abs(diferencia).toFixed(2)}`;
+            difSpan.textContent = `❌ FALTAN $${fmtMoney(Math.abs(diferencia))}`;
             difSpan.style.color = "#e74c3c"; 
         }
     }

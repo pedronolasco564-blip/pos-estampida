@@ -457,3 +457,68 @@ describe('Borradores de orden (platillos sin enviar)', () => {
         assert.equal(row, undefined);
     });
 });
+
+describe('Conteo de caja y reporte mensual', () => {
+    const cash = require('../src/services/cashService');
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let today;
+
+    before(async () => { today = (await dbGet(`SELECT date('now', '-6 hours') AS d`)).d; });
+
+    test('La fórmula reproduce la hoja de Excel del 26-10 (fondo 407, venta 9,324, gastos 9,385)', () => {
+        const esperado = cash.expectedCash(407, { total_efectivo: 9324, total_gastos: 9385, propinas_tarjeta: 0 });
+        assert.equal(esperado, 346);
+        // 2 billetes de $20 + monedas 16x$10, 18x$5, 24x$2, 33x$1 = $371 contados
+        assert.equal(371 - esperado, 25);
+    });
+
+    test('Guardar conteo calcula contado/esperado/diferencia y deja el fondo de mañana', async () => {
+        const corte = await (await fetch(`${testBaseUrl}/api/reports/corte?date=${today}`)).json();
+        const fondoHoy = cash.expectedCash(0, corte.summary); // sin fondo capturado hoy en la BD de pruebas
+        const denominations = { b20: 2, m10: 16, m5: 18, m2: 24, m1: 33 };
+        const res = await fetch(`${testBaseUrl}/api/reports/cash-count`, json('POST', { date: today, denominations, next_fondo: 331 }));
+        assert.equal(res.status, 200);
+        const r = await res.json();
+        assert.equal(r.counted, 371);
+        assert.equal(r.expected, fondoHoy);
+        assert.equal(r.difference, Math.round((371 - fondoHoy) * 100) / 100);
+
+        const saved = (await (await fetch(`${testBaseUrl}/api/reports/cash-count?date=${today}`)).json()).count;
+        assert.deepEqual(saved.denominations, denominations);
+        const fondoManana = await (await fetch(`${testBaseUrl}/api/reports/fondo?date=${cash.nextDate(today)}`)).json();
+        assert.equal(fondoManana.fondo, 331);
+    });
+
+    test('Rechaza conteos inválidos', async () => {
+        const bad = await fetch(`${testBaseUrl}/api/reports/cash-count`, json('POST', { date: today, denominations: { b20: -3 } }));
+        assert.equal(bad.status, 400);
+        const badDate = await fetch(`${testBaseUrl}/api/reports/cash-count`, json('POST', { date: 'hoy', denominations: {} }));
+        assert.equal(badDate.status, 400);
+    });
+
+    test('El reporte mensual incluye el día con su conteo y totales', async () => {
+        const month = today.slice(0, 7);
+        const rep = await (await fetch(`${testBaseUrl}/api/reports/monthly?month=${month}`)).json();
+        const day = rep.days.find(d => d.date === today);
+        assert.ok(day, 'el día de hoy aparece en el reporte');
+        assert.equal(day.contado, 371);
+        assert.equal(rep.totals.dias_contados >= 1, true);
+        assert.equal(rep.totals.total, Math.round(rep.days.reduce((a, d) => a + d.total, 0) * 100) / 100);
+    });
+
+    test('Descarga el Excel del mes (.xlsx válido)', async () => {
+        const res = await fetch(`${testBaseUrl}/api/reports/monthly.xlsx?month=${today.slice(0, 7)}`);
+        assert.equal(res.status, 200);
+        const buf = Buffer.from(await res.arrayBuffer());
+        assert.equal(buf.slice(0, 2).toString(), 'PK'); // los .xlsx son archivos zip
+        const ExcelJS = require('exceljs');
+        const wb = new ExcelJS.Workbook();
+        await wb.xlsx.load(buf);
+        assert.equal(wb.worksheets.length, 2);
+    });
+
+    test('Sin sesión de admin no se puede ver ni guardar', async () => {
+        const res = await fetch(`${testBaseUrl}/api/reports/monthly?month=${today.slice(0, 7)}`, { headers: { Authorization: '' } });
+        assert.equal(res.status, 401);
+    });
+});

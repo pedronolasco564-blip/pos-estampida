@@ -3,6 +3,8 @@ const fs = require('fs');
 const { dbGet, dbAll, dbRun, dbExec } = require('../utils/dbHelper');
 const { verifyAdminPin } = require('../middleware/verifyPin');
 const { calculateCorteData } = require('../services/reportService');
+const cashService = require('../services/cashService');
+const { emitUpdate } = require('../utils/emitUpdate');
 
 let printerService = null;
 try {
@@ -220,7 +222,65 @@ const getAuditLogs = async (req, res) => {
     }
 };
 
+// ========================================================
+// CONTEO DE CAJA Y REPORTE MENSUAL
+// ========================================================
+const getCashCount = async (req, res) => {
+    try {
+        const { date } = req.query;
+        if (!cashService.isDate(date)) return res.status(400).json({ error: 'Fecha inválida.' });
+        res.json({ count: await cashService.getCashCount(date) });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const saveCashCount = async (req, res) => {
+    try {
+        const { date, denominations, next_fondo } = req.body;
+        if (!cashService.isDate(date)) return res.status(400).json({ error: 'Fecha inválida.' });
+        const result = await cashService.saveCashCount(date, denominations, next_fondo);
+        emitUpdate(req);
+        res.json(result);
+    } catch (err) {
+        if (err.status === 400) return res.status(400).json({ error: err.message });
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const getMonthly = async (req, res) => {
+    try {
+        const { month } = req.query;
+        if (!cashService.isMonth(month)) return res.status(400).json({ error: 'Mes inválido (use AAAA-MM).' });
+        res.json(await cashService.calculateMonthly(month));
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const getMonthlyExcel = async (req, res) => {
+    try {
+        const { month } = req.query;
+        if (!cashService.isMonth(month)) return res.status(400).json({ error: 'Mes inválido (use AAAA-MM).' });
+        const report = await cashService.calculateMonthly(month);
+        const buffer = await cashService.buildMonthlyWorkbook(report);
+        res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+        res.setHeader('Content-Disposition', `attachment; filename="Ventas_Estampida_${month}.xlsx"`);
+        res.send(Buffer.from(buffer));
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
 module.exports = {
+    getCashCount,
+    saveCashCount,
+    getMonthly,
+    getMonthlyExcel,
     getBackupStatus,
     getCorte,
     printCorte,

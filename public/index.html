@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Asadero La Estampida - POS</title>
-    <link rel="stylesheet" href="style.css?v=5">
+    <link rel="stylesheet" href="style.css?v=6">
     <link rel="icon" type="image/jpeg" href="logo.jpg">
     <style>
         @media print {
@@ -61,6 +61,7 @@
         <button class="admin-nav-item" data-nav="inicio" onclick="adminNavigate('inicio')"><span class="admin-nav-icon">🏠</span><span>Inicio</span></button>
         <button class="admin-nav-item" data-nav="caja" onclick="adminNavigate('caja')"><span class="admin-nav-icon">💻</span><span>Caja</span></button>
         <button class="admin-nav-item" data-nav="corte" onclick="adminNavigate('corte')"><span class="admin-nav-icon">📊</span><span>Corte</span></button>
+        <button class="admin-nav-item" data-nav="reporte" onclick="adminNavigate('reporte')"><span class="admin-nav-icon">📅</span><span>Reporte</span></button>
         <button class="admin-nav-item" data-nav="menu" onclick="adminNavigate('menu')"><span class="admin-nav-icon">🥩</span><span>Menú</span></button>
         <button class="admin-nav-item" data-nav="ajustes" onclick="adminNavigate('ajustes')"><span class="admin-nav-icon">⚙️</span><span>Ajustes</span></button>
         <button class="admin-nav-item" data-nav="auditoria" onclick="adminNavigate('auditoria')"><span class="admin-nav-icon">🛡️</span><span>Auditoría</span></button>
@@ -183,6 +184,7 @@
                     <span>Vendido hoy</span>
                     <h3 style="color: var(--color-success);">$<span id="dash-ventas">0.00</span></h3>
                     <small id="dash-tickets" class="metric-note">0 tickets cerrados</small>
+                    <small id="dash-compare" class="metric-note compare-note"></small>
                 </div>
                 <div class="summary-metric" style="border-left-color: var(--color-warning);">
                     <span>Por cobrar</span>
@@ -244,11 +246,13 @@
                     <span>Total vendido</span>
                     <h3>$<span id="corte-total">0.00</span></h3>
                     <small class="metric-note">Comedor y para llevar, todos los métodos de pago</small>
+                    <small id="corte-compare" class="metric-note compare-note"></small>
                 </div>
                 <div class="hero-metric hero-main" style="--accent: #38bdf8;">
                     <span>Efectivo esperado en caja</span>
                     <h3>$<span id="corte-esperado">0.00</span></h3>
                     <button onclick="abrirArqueo()" class="hero-btn">🧮 Contar billetes</button>
+                    <small id="corte-conteo-estado" class="metric-note"></small>
                 </div>
                 <div class="hero-metric" style="--accent: #c084fc;">
                     <span>Ventas banco (tarjeta / transferencia)</span>
@@ -306,6 +310,61 @@
                 <table class="corte-table">
                     <thead><tr><th>Ticket</th><th>Mesa</th><th>Mesero</th><th>Método</th><th>Total</th><th>Propina Tarj.</th><th>Factura</th><th>Hora Cierre</th><th>Acción</th></tr></thead>
                     <tbody id="corte-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </main>
+
+    <!-- VISTA: REPORTE DEL MES -->
+    <main id="report-view" class="corte-container" style="display: none;">
+        <div class="corte-card" style="max-width: 1200px;">
+            <div class="corte-header">
+                <div>
+                    <h2 id="report-title">Reporte del mes</h2>
+                    <div class="dash-subtitle">Un renglón por día · toca un día para abrir su corte</div>
+                </div>
+                <div class="report-actions">
+                    <input type="month" id="report-month" onchange="loadMonthlyReport()">
+                    <button class="btn-success" onclick="descargarExcelMes()">📥 Descargar Excel</button>
+                </div>
+            </div>
+
+            <div class="dash-kpis">
+                <div class="summary-metric" style="border-left-color: var(--color-success);">
+                    <span>Vendido en el mes</span>
+                    <h3 style="color: var(--color-success);">$<span id="rep-total">0.00</span></h3>
+                    <small id="rep-tickets" class="metric-note"></small>
+                </div>
+                <div class="summary-metric" style="border-left-color: var(--color-info);">
+                    <span>Efectivo · TPV</span>
+                    <h3 style="font-size: clamp(16px, 1.4vw, 22px);">$<span id="rep-efectivo">0.00</span></h3>
+                    <small class="metric-note">TPV: $<span id="rep-tpv">0.00</span></small>
+                </div>
+                <div class="summary-metric" style="border-left-color: var(--color-warning);">
+                    <span>Promedio por día</span>
+                    <h3 style="color: var(--color-warning);">$<span id="rep-promedio">0.00</span></h3>
+                    <small id="rep-mejor" class="metric-note"></small>
+                </div>
+                <div class="summary-metric" style="border-left-color: var(--color-danger);">
+                    <span>Gastos del mes</span>
+                    <h3 style="color: var(--color-danger);">$<span id="rep-gastos">0.00</span></h3>
+                    <small id="rep-diferencias" class="metric-note"></small>
+                </div>
+            </div>
+
+            <h3 class="admin-section-title">Días del mes</h3>
+            <div class="table-responsive">
+                <table class="corte-table report-table">
+                    <thead><tr><th>Día</th><th>Tickets</th><th>Efectivo</th><th>TPV</th><th>Total</th><th>Gastos</th><th>Fondo</th><th>Esperado</th><th>Contado</th><th>Diferencia</th></tr></thead>
+                    <tbody id="report-tbody"></tbody>
+                </table>
+            </div>
+
+            <h3 class="admin-section-title" style="margin-top: 28px;">Gastos del mes por concepto</h3>
+            <div class="table-responsive">
+                <table class="corte-table">
+                    <thead><tr><th>Concepto</th><th>Categoría</th><th>Veces</th><th>Total</th></tr></thead>
+                    <tbody id="report-gastos-tbody"></tbody>
                 </table>
             </div>
         </div>
@@ -678,22 +737,22 @@
                 <!-- SECCIÓN BILLETES -->
                 <div style="flex: 1; min-width: 200px;">
                     <h3 style="color: var(--color-success); border-bottom: 2px solid var(--color-success); padding-bottom: 4px; font-size: 14px; font-weight: 800;">Billetes</h3>
-                    <div class="arqueo-row"><label>$1,000</label><input type="number" min="0" class="arq-input" data-val="1000" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$500</label><input type="number" min="0" class="arq-input" data-val="500" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$200</label><input type="number" min="0" class="arq-input" data-val="200" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$100</label><input type="number" min="0" class="arq-input" data-val="100" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$50</label><input type="number" min="0" class="arq-input" data-val="50" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$20</label><input type="number" min="0" class="arq-input" data-val="20" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$1,000</label><input type="number" min="0" class="arq-input" data-val="1000" data-key="b1000" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$500</label><input type="number" min="0" class="arq-input" data-val="500" data-key="b500" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$200</label><input type="number" min="0" class="arq-input" data-val="200" data-key="b200" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$100</label><input type="number" min="0" class="arq-input" data-val="100" data-key="b100" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$50</label><input type="number" min="0" class="arq-input" data-val="50" data-key="b50" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$20</label><input type="number" min="0" class="arq-input" data-val="20" data-key="b20" oninput="calcularArqueo()"></div>
                 </div>
                 <!-- SECCIÓN MONEDAS -->
                 <div style="flex: 1; min-width: 200px;">
                     <h3 style="color: #fbbf24; border-bottom: 2px solid #fbbf24; padding-bottom: 4px; font-size: 14px; font-weight: 800;">Monedas</h3>
-                    <div class="arqueo-row"><label>$20</label><input type="number" min="0" class="arq-input" data-val="20" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$10</label><input type="number" min="0" class="arq-input" data-val="10" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$5</label><input type="number" min="0" class="arq-input" data-val="5" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$2</label><input type="number" min="0" class="arq-input" data-val="2" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>$1</label><input type="number" min="0" class="arq-input" data-val="1" oninput="calcularArqueo()"></div>
-                    <div class="arqueo-row"><label>50¢</label><input type="number" min="0" step="1" class="arq-input" data-val="0.5" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$20</label><input type="number" min="0" class="arq-input" data-val="20" data-key="m20" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$10</label><input type="number" min="0" class="arq-input" data-val="10" data-key="m10" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$5</label><input type="number" min="0" class="arq-input" data-val="5" data-key="m5" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$2</label><input type="number" min="0" class="arq-input" data-val="2" data-key="m2" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>$1</label><input type="number" min="0" class="arq-input" data-val="1" data-key="m1" oninput="calcularArqueo()"></div>
+                    <div class="arqueo-row"><label>50¢</label><input type="number" min="0" step="1" class="arq-input" data-val="0.5" data-key="m050" oninput="calcularArqueo()"></div>
                 </div>
             </div>
 
@@ -712,6 +771,18 @@
                         <strong style="font-size: 17px; font-family: var(--font-mono);" id="arq-diferencia">$0.00</strong>
                     </div>
                 </div>
+            </div>
+
+            <!-- GUARDAR CONTEO Y FONDO PARA MAÑANA -->
+            <div class="arq-save-box">
+                <label for="arq-fondo-manana">Fondo que se queda para mañana</label>
+                <div class="arq-save-row">
+                    <span class="arq-currency">$</span>
+                    <input type="number" min="0" step="0.5" id="arq-fondo-manana" placeholder="0.00">
+                    <button onclick="guardarConteo()" class="btn-primary arq-save-btn">💾 Guardar conteo</button>
+                </div>
+                <small id="arq-fondo-hint" class="metric-note"></small>
+                <small id="arq-guardado" class="metric-note"></small>
             </div>
 
             <div style="margin-top: 16px; display: flex; gap: 8px;">

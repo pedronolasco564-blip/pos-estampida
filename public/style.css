@@ -1588,3 +1588,50 @@ body.admin-mode #btn-close-audit { display: none !important; }
     .formula-op { display: none; }
     .dash-row { grid-template-columns: 70px 1fr auto; }
 }
+
+/* ========================================================
+   FASE C: comparativo, diferencias de caja, conteo guardado y reporte del mes
+   ======================================================== */
+.compare-note { font-weight: 700; }
+.dif-ok { color: var(--color-success); font-weight: 800; }
+.dif-warn { color: var(--color-warning); font-weight: 800; }
+.dif-bad { color: var(--color-danger); font-weight: 800; }
+.dif-none { color: var(--text-muted); }
+.dif-badge {
+    display: inline-block;
+    padding: 3px 8px;
+    border-radius: var(--radius-full);
+    font-size: 12px;
+    white-space: nowrap;
+    background: var(--surface-subtle);
+}
+.dif-badge.dif-ok { background: rgba(16, 185, 129, 0.15); }
+.dif-badge.dif-warn { background: rgba(245, 158, 11, 0.15); }
+.dif-badge.dif-bad { background: rgba(239, 68, 68, 0.15); }
+
+.report-actions { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.report-actions input[type="month"] { font-weight: 700; padding: 9px 12px; }
+.report-actions button { padding: 10px 16px; }
+.report-table td { font-family: var(--font-mono); white-space: nowrap; }
+.report-row { cursor: pointer; }
+.report-row:hover td { background: var(--surface-subtle); }
+.report-weekday { font-family: var(--font-sans, inherit); color: var(--text-secondary); font-size: 12px; text-transform: capitalize; }
+
+.arq-save-box {
+    margin-top: 14px;
+    padding: 14px;
+    border-radius: var(--radius-md);
+    border: 1px solid rgba(16, 185, 129, 0.35);
+    background: rgba(16, 185, 129, 0.06);
+}
+.arq-save-box label { display: block; font-size: 12px; font-weight: 800; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+.arq-save-row { display: flex; gap: 8px; align-items: center; }
+.arq-currency { font-family: var(--font-mono); font-weight: 900; color: var(--color-success); font-size: 18px; }
+.arq-save-row input { flex: 1; min-width: 0; font-family: var(--font-mono); font-weight: 800; font-size: 16px; text-align: center; }
+.arq-save-btn { flex: 0 0 auto; padding: 10px 14px; background: linear-gradient(135deg, #10b981, #059669); white-space: nowrap; }
+
+/* Textos dentro de las notas de una métrica: no heredan el estilo de etiqueta (bloque, mayúsculas) */
+.summary-metric .metric-note span { display: inline; font-size: inherit; text-transform: none; letter-spacing: 0; margin: 0; color: inherit; }
+.summary-metric .metric-note .dif-bad { color: var(--color-danger); }
+.summary-metric .metric-note .dif-warn { color: var(--color-warning); }
+.summary-metric .metric-note .dif-ok { color: var(--color-success); }
