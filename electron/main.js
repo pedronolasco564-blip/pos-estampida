@@ -1,10 +1,8 @@
-const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, ipcMain } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
 
-// Impresión silenciosa (equivale al --kiosk-printing de Edge): imprime directo a la impresora predeterminada de Windows.
-app.commandLine.appendSwitch('kiosk-printing');
 
 const PORT = 3000;
 let mainWindow = null;
@@ -44,7 +42,8 @@ function autoBackup(dataDir) {
         if (!fs.existsSync(db)) return;
         const dir = path.join(dataDir, 'respaldos');
         fs.mkdirSync(dir, { recursive: true });
-        const stamp = new Date().toISOString().slice(0, 10);
+        const d = new Date(); // fecha local (toISOString daría la fecha UTC, un día adelantada por la noche)
+        const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
         const dest = path.join(dir, `auto_${stamp}.db`);
         if (!fs.existsSync(dest)) fs.copyFileSync(db, dest);
         fs.readdirSync(dir).filter(f => f.startsWith('auto_')).sort().reverse().slice(14)
@@ -67,6 +66,48 @@ function setupAutoUpdate() {
     setInterval(check, 4 * 60 * 60 * 1000);
 }
 
+// ========================================================
+// IMPRESORA DE TICKETS: se elige por nombre (no depende de la predeterminada de Windows)
+// ========================================================
+const configPath = () => path.join(app.getPath('userData'), 'config.json');
+function readConfig() {
+    try { return JSON.parse(fs.readFileSync(configPath(), 'utf8')); } catch (_) { return {}; }
+}
+function writeConfig(cfg) {
+    try { fs.writeFileSync(configPath(), JSON.stringify(cfg, null, 2)); } catch (e) { console.error('Config:', e.message); }
+}
+
+// La elegida en el menú; si no hay, una que parezca térmica (TICKETS, EPSON, TM-, POS...); si no, la predeterminada.
+async function resolveTicketPrinter() {
+    const printers = mainWindow ? await mainWindow.webContents.getPrintersAsync() : [];
+    const chosen = readConfig().ticketPrinter;
+    if (chosen && printers.some(p => p.name === chosen)) return { name: chosen, how: 'elegida' };
+    const thermal = printers.find(p => /ticket|epson|tm-|pos|t[eé]rmica|80 ?mm/i.test(p.name));
+    if (thermal) return { name: thermal.name, how: 'detectada' };
+    const def = printers.find(p => p.isDefault);
+    if (def) return { name: def.name, how: 'predeterminada' };
+    return { name: null, how: 'ninguna' };
+}
+
+// Los tickets se imprimen en una ventana oculta aparte: el ticket no depende de lo que haga la caja mientras tanto.
+ipcMain.handle('print-ticket', async (event, html) => {
+    if (typeof html !== 'string' || html.length > 500000) return { ok: false, reason: 'Ticket inválido' };
+    const printer = await resolveTicketPrinter();
+    if (!printer.name) return { ok: false, reason: 'No hay impresoras instaladas en Windows' };
+    const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } });
+    try {
+        await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+        return await new Promise((resolve) => {
+            win.webContents.print({ silent: true, deviceName: printer.name, printBackground: false, margins: { marginType: 'none' } },
+                (ok, reason) => resolve({ ok, reason: ok ? null : `${reason || 'error'} (${printer.name})` }));
+        });
+    } catch (e) {
+        return { ok: false, reason: e.message };
+    } finally {
+        setTimeout(() => { if (!win.isDestroyed()) win.destroy(); }, 1000);
+    }
+});
+
 function createSplash() {
     splash = new BrowserWindow({ width: 450, height: 550, frame: false, resizable: false, alwaysOnTop: true, backgroundColor: '#1a1a1a' });
     splash.loadFile(path.join(app.getAppPath(), 'splash.html'));
@@ -76,7 +117,7 @@ function createMainWindow() {
     mainWindow = new BrowserWindow({
         width: 1366, height: 768, show: false, backgroundColor: '#1a1a1a',
         autoHideMenuBar: true,
-        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, preload: path.join(__dirname, 'preload.js') }
     });
     mainWindow.maximize();
     mainWindow.loadURL(`http://localhost:${PORT}`);
@@ -94,15 +135,29 @@ function createTray() {
     const iconPath = path.join(app.getAppPath(), 'public', 'logo.jpg');
     tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 }));
     tray.setToolTip('POS La Estampida (servidor activo)');
+    buildTrayMenu();
+    tray.on('double-click', () => { mainWindow.show(); mainWindow.focus(); });
+}
+
+async function buildTrayMenu() {
+    let printers = [];
+    try { printers = await mainWindow.webContents.getPrintersAsync(); } catch (_) {}
+    const current = (await resolveTicketPrinter()).name;
+    const printerItems = printers.length
+        ? printers.map(p => ({
+            label: p.name, type: 'radio', checked: p.name === current,
+            click: () => { writeConfig({ ...readConfig(), ticketPrinter: p.name }); buildTrayMenu(); }
+        }))
+        : [{ label: 'No hay impresoras en Windows', enabled: false }];
     tray.setContextMenu(Menu.buildFromTemplate([
         { label: 'Abrir caja', click: () => { mainWindow.show(); mainWindow.focus(); } },
         { label: 'Dirección para celulares', click: showPhoneAddress },
         { label: 'Diagnóstico', click: showDiagnostics },
+        { label: 'Impresora de tickets', submenu: [...printerItems, { type: 'separator' }, { label: 'Actualizar lista', click: buildTrayMenu }] },
         { label: 'Abrir carpeta de respaldos', click: () => shell.openPath(path.join(app.getPath('userData'), 'respaldos')) },
         { type: 'separator' },
         { label: 'Salir (desconecta a los meseros)', click: confirmQuit }
     ]));
-    tray.on('double-click', () => { mainWindow.show(); mainWindow.focus(); });
 }
 
 // Direcciones por las que los celulares pueden entrar (red local).
@@ -141,8 +196,10 @@ async function showDiagnostics() {
     lines.push(`Celulares: ${urls.length ? urls.join('  ') : 'sin red detectada'}`);
     try {
         const printers = await mainWindow.webContents.getPrintersAsync();
+        const ticket = await resolveTicketPrinter();
+        lines.push(`Impresora de tickets: ${ticket.name ? `${ticket.name} (${ticket.how})` : 'NINGUNA (los tickets no saldrán)'}`);
         const def = printers.find(p => p.isDefault);
-        lines.push(`Impresora predeterminada: ${def ? def.name : 'NINGUNA (los tickets no saldrán directo)'}`);
+        lines.push(`Impresora predeterminada de Windows: ${def ? def.name : 'ninguna'}`);
         lines.push(`Impresoras en Windows: ${printers.map(p => p.name).join(', ') || 'ninguna'}`);
         const esc = process.env.POS_PRINTER || '//localhost/CajaEstampida';
         const shared = esc.split('/').pop();

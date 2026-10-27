@@ -1482,7 +1482,19 @@ async function printTicket() {
         return; // El celular termina su trabajo aquí sin abrir diálogos de PDF
     }
 
-    // 🖨️ MODO PC (Caja): Imprime físicamente usando un iframe invisible
+    // 🖨️ APP DE ESCRITORIO: el ticket va directo a la impresora de tickets elegida (sin depender de la predeterminada)
+    if (window.posDesktop) {
+        const ticketDoc = `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ticket_Estampida</title><style>
+            @page { margin: 0; }
+            body { margin: 0; padding: 5mm; width: 70mm; background: #fff; color: #000 !important; font-weight: bold !important; -webkit-font-smoothing: none; text-rendering: geometricPrecision; font-family: Arial, sans-serif; }
+            * { color: #000 !important; }
+        </style></head><body>${ticketContent}</body></html>`;
+        const result = await window.posDesktop.printTicket(ticketDoc);
+        if (!result || !result.ok) await customAlert(`No se pudo imprimir el ticket: ${escapeHtml(result ? result.reason : 'sin respuesta')}. Revisa la impresora en el icono del POS junto al reloj → Impresora de tickets.`, 'error', 'Impresión');
+        return;
+    }
+
+    // 🖨️ MODO PC en navegador (sistema anterior): Imprime físicamente usando un iframe invisible
     let printFrame = document.getElementById('print-frame');
     if (!printFrame) {
         printFrame = document.createElement('iframe');
