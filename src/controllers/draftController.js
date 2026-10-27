@@ -1,4 +1,5 @@
 const { dbGet, dbRun } = require('../utils/dbHelper');
+const { round2 } = require('../utils/money');
 const { emitUpdate } = require('../utils/emitUpdate');
 
 // ========================================================
@@ -26,7 +27,7 @@ function sanitizeItems(items) {
             notes: String(it.notes || '').slice(0, 300),
             is_takeaway: !!it.is_takeaway,
             station: String(it.station || '').slice(0, 40),
-            extra_price: Math.max(0, Number(it.extra_price) || 0)
+            extra_price: Math.max(0, round2(it.extra_price))
         });
     }
     return clean;

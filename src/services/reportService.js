@@ -1,5 +1,6 @@
 const { dbAll } = require('../utils/dbHelper');
 const { folioSql } = require('../utils/folio');
+const { round2 } = require('../utils/money');
 
 /**
  * Calcula los totales, desgloses y métricas del corte de caja para una fecha determinada.
@@ -42,14 +43,14 @@ async function calculateCorteData(targetDate) {
     let totalComedor = 0;
 
     orders.forEach(o => {
-        const orderTotal = Number(o.total) || 0;
+        const orderTotal = round2(o.total);
         totalGeneral += orderTotal;
 
         const waiter = o.waiter_name || 'Sin Asignar';
         if (!ventasPorMesero[waiter]) {
             ventasPorMesero[waiter] = { total: 0, tickets: 0 };
         }
-        ventasPorMesero[waiter].total += orderTotal;
+        ventasPorMesero[waiter].total = round2(ventasPorMesero[waiter].total + orderTotal);
         ventasPorMesero[waiter].tickets += 1;
 
         const propina = Number(o.tip_amount) || 0;
@@ -87,15 +88,15 @@ async function calculateCorteData(targetDate) {
     });
 
     const summary = {
-        total_general: totalGeneral,
-        total_efectivo: totalEfectivo,
-        total_tarjeta: totalTarjeta,
-        propinas_efectivo: propinasEfectivo,
-        propinas_tarjeta: propinasTarjeta,
-        total_gastos: totalGastos,
+        total_general: round2(totalGeneral),
+        total_efectivo: round2(totalEfectivo),
+        total_tarjeta: round2(totalTarjeta),
+        propinas_efectivo: round2(propinasEfectivo),
+        propinas_tarjeta: round2(propinasTarjeta),
+        total_gastos: round2(totalGastos),
         desglose_gastos: desgloseGastos,
-        total_llevar: totalLlevar,
-        total_comedor: totalComedor,
+        total_llevar: round2(totalLlevar),
+        total_comedor: round2(totalComedor),
         num_tickets: numTickets,
         ventas_por_mesero: ventasPorMesero
     };

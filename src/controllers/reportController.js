@@ -1,4 +1,5 @@
 const path = require('path');
+const { round2 } = require('../utils/money');
 const fs = require('fs');
 const { dbGet, dbAll, dbRun, dbExec } = require('../utils/dbHelper');
 const { verifyAdminPin } = require('../middleware/verifyPin');
@@ -65,7 +66,7 @@ const printCorte = async (req, res) => {
 const addExpense = async (req, res) => {
     try {
         const { amount, concept, category } = req.body;
-        const numericAmount = Number(amount) || 0;
+        const numericAmount = round2(amount);
 
         if (numericAmount <= 0) {
             return res.status(400).json({ error: 'El monto del gasto debe ser mayor a cero.' });
@@ -174,7 +175,7 @@ const backupDatabase = async (req, res) => {
         }
 
         const { DB_PATH: dbPath } = require('../config/paths');
-        const fecha = new Date().toISOString().split('T')[0];
+        const fecha = require('../utils/backup').localDate();
 
         res.download(dbPath, `Respaldo_Estampida_${fecha}.db`, (err) => {
             if (err && !res.headersSent) {

@@ -1,6 +1,7 @@
 const { dbGet, dbAll, dbRun, dbTransaction } = require('../utils/dbHelper');
 const { emitUpdate } = require('../utils/emitUpdate');
 const { folioSql } = require('../utils/folio');
+const { round2 } = require('../utils/money');
 const { verifyAdminPin, hashPin } = require('../middleware/verifyPin');
 const { createSession, destroySession, getToken } = require('../middleware/adminSession');
 
@@ -233,7 +234,7 @@ const createModifier = async (req, res) => {
         const { name, price } = req.body;
         if (!name) return res.status(400).json({ error: 'Nombre de modificador requerido.' });
 
-        await dbRun(`INSERT INTO modifiers (name, price) VALUES (?, ?)`, [String(name).trim(), Number(price) || 0]);
+        await dbRun(`INSERT INTO modifiers (name, price) VALUES (?, ?)`, [String(name).trim(), round2(price)]);
         res.json({ message: 'Modificador creado' });
     } catch (err) {
         if (err.message.includes('UNIQUE')) {
@@ -274,7 +275,7 @@ const createProduct = async (req, res) => {
 
         await dbRun(
             `INSERT INTO products (name, price, station, category, is_available) VALUES (?, ?, ?, ?, 1)`,
-            [String(name).trim(), Number(price) || 0, station || 'COCINA', category || 'GENERAL']
+            [String(name).trim(), round2(price), station || 'COCINA', category || 'GENERAL']
         );
 
         emitUpdate(req, 'update-products');
@@ -291,7 +292,7 @@ const updateProduct = async (req, res) => {
         const { name, price, station, category } = req.body;
         await dbRun(
             `UPDATE products SET name=?, price=?, station=?, category=? WHERE id=?`,
-            [String(name).trim(), Number(price) || 0, station || 'COCINA', category || 'GENERAL', req.params.id]
+            [String(name).trim(), round2(price), station || 'COCINA', category || 'GENERAL', req.params.id]
         );
 
         emitUpdate(req, 'update-products');

@@ -14,7 +14,7 @@ const DENOMINATIONS = {
     m20: 20, m10: 10, m5: 5, m2: 2, m1: 1, m050: 0.5
 };
 
-const round2 = (n) => Math.round(n * 100) / 100;
+const { round2 } = require('../utils/money');
 const isDate = (s) => /^\d{4}-\d{2}-\d{2}$/.test(String(s || ''));
 const isMonth = (s) => /^\d{4}-\d{2}$/.test(String(s || ''));
 

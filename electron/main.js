@@ -35,21 +35,6 @@ function prepareDataDir() {
     return dataDir;
 }
 
-// Respaldo automático al iniciar: conserva las últimas 14 copias.
-function autoBackup(dataDir) {
-    try {
-        const db = path.join(dataDir, 'pos_restaurante.db');
-        if (!fs.existsSync(db)) return;
-        const dir = path.join(dataDir, 'respaldos');
-        fs.mkdirSync(dir, { recursive: true });
-        const d = new Date(); // fecha local (toISOString daría la fecha UTC, un día adelantada por la noche)
-        const stamp = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const dest = path.join(dir, `auto_${stamp}.db`);
-        if (!fs.existsSync(dest)) fs.copyFileSync(db, dest);
-        fs.readdirSync(dir).filter(f => f.startsWith('auto_')).sort().reverse().slice(14)
-            .forEach(f => fs.unlinkSync(path.join(dir, f)));
-    } catch (e) { console.error('Respaldo automático falló:', e.message); }
-}
 
 // Actualizaciones desde GitHub Releases. Se descargan solas y se instalan nunca a media jornada:
 // - al arrancar (si ya estaba descargada, se instala en los primeros minutos, antes del servicio);
@@ -246,11 +231,12 @@ async function confirmQuit() {
 app.whenReady().then(async () => {
     createSplash();
     try {
-        const dataDir = prepareDataDir();
-        autoBackup(dataDir);
+        prepareDataDir();
         // Se requiere después de definir POS_DATA_DIR para que la BD se abra en la carpeta correcta.
         const { start } = require(path.join(app.getAppPath(), 'server.js'));
         await start(PORT);
+        // Respaldo diario (copia consistente que incluye lo pendiente en el archivo -wal)
+        require('../src/utils/backup').dailyBackup().catch(e => console.error('Respaldo automático falló:', e.message));
         backendStarted = true;
     } catch (err) {
         dialog.showErrorBox('No se pudo iniciar el servidor',

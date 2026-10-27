@@ -2,6 +2,7 @@ const { dbGet, dbAll, dbRun, dbTransaction } = require('../utils/dbHelper');
 const { emitUpdate } = require('../utils/emitUpdate');
 const { emitDraft } = require('./draftController');
 const { folioSql, nextFolio, orderFolio } = require('../utils/folio');
+const { toCents, fromCents, round2 } = require('../utils/money');
 
 // Nombre visible de la mesa para los mensajes de auditoría (ej. "Mesa 07", "PARA LLEVAR 1")
 async function mesaNombre(tableId) {
@@ -34,9 +35,10 @@ async function updateOrderTotal(orderId) {
     const orderRow = await dbGet(`SELECT total, remaining_balance, discount_amount FROM orders WHERE id = ?`, [orderId]);
     if (!orderRow) return;
 
-    const oldTotal = Number(orderRow.total) || 0;
-    const oldRemaining = Number(orderRow.remaining_balance) || 0;
-    const discount = Number(orderRow.discount_amount) || 0;
+    // Todo en centavos enteros
+    const oldTotal = toCents(orderRow.total);
+    const oldRemaining = toCents(orderRow.remaining_balance);
+    const discount = toCents(orderRow.discount_amount);
 
     const row = await dbGet(
         `SELECT SUM(oi.quantity * (p.price + IFNULL(oi.extra_price, 0))) as new_total 
@@ -46,7 +48,7 @@ async function updateOrderTotal(orderId) {
         [orderId]
     );
 
-    let rawTotal = row && row.new_total ? Number(row.new_total) : 0;
+    let rawTotal = row && row.new_total ? toCents(row.new_total) : 0;
     let newTotal = rawTotal - discount;
     if (newTotal < 0) newTotal = 0;
 
@@ -54,7 +56,7 @@ async function updateOrderTotal(orderId) {
     let newRemaining = oldRemaining + difference;
     if (newRemaining < 0) newRemaining = 0;
 
-    await dbRun(`UPDATE orders SET total = ?, remaining_balance = ? WHERE id = ?`, [newTotal, newRemaining, orderId]);
+    await dbRun(`UPDATE orders SET total = ?, remaining_balance = ? WHERE id = ?`, [fromCents(newTotal), fromCents(newRemaining), orderId]);
 }
 
 // ========================================================
@@ -118,7 +120,7 @@ const createOrder = async (req, res) => {
                         item.quantity,
                         item.notes || '',
                         item.is_takeaway ? 1 : 0,
-                        item.extra_price || 0
+                        round2(item.extra_price)
                     ]
                 );
             }
@@ -159,7 +161,7 @@ const addItemsToOrder = async (req, res) => {
                 const existing = await dbGet(
                     `SELECT id FROM order_items 
                      WHERE order_id = ? AND product_id = ? AND notes = ? AND is_takeaway = ? AND extra_price = ? AND paid = 0`,
-                    [id, item.product_id, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0]
+                    [id, item.product_id, item.notes || '', item.is_takeaway ? 1 : 0, round2(item.extra_price)]
                 );
 
                 if (existing) {
@@ -168,7 +170,7 @@ const addItemsToOrder = async (req, res) => {
                     await dbRun(
                         `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) 
                          VALUES (?, ?, ?, ?, ?, ?, 0)`,
-                        [id, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0]
+                        [id, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, round2(item.extra_price)]
                     );
                 }
             }
@@ -203,8 +205,8 @@ const payOrder = async (req, res) => {
     const { id } = req.params;
     const { payment_method, amount_paid, items_to_pay, tip_amount = 0, needs_invoice = false } = req.body;
     const invoiceFlag = needs_invoice ? 1 : 0;
-    const numericPaid = Number(amount_paid) || 0;
-    const numericTip = Number(tip_amount) || 0;
+    const numericPaid = round2(amount_paid);
+    const numericTip = round2(tip_amount);
 
     if (numericPaid < 0 || numericTip < 0) {
         return res.status(400).json({ error: 'Los montos no pueden ser negativos.' });
@@ -236,14 +238,16 @@ const payOrder = async (req, res) => {
                 }
             }
 
-            const currentBalance = (order.remaining_balance !== null && order.remaining_balance !== undefined)
-                ? Number(order.remaining_balance)
-                : Number(order.total);
+            // Comparación y restas en centavos: pagar "exacto" siempre liquida la cuenta
+            const balanceCents = toCents((order.remaining_balance !== null && order.remaining_balance !== undefined)
+                ? order.remaining_balance
+                : order.total);
+            const paidCents = toCents(numericPaid);
 
-            const isFullyPaid = numericPaid >= currentBalance;
-            const appliedAmount = isFullyPaid ? currentBalance : numericPaid;
-            const change = isFullyPaid ? numericPaid - currentBalance : 0;
-            const newBalance = isFullyPaid ? 0 : currentBalance - numericPaid;
+            const isFullyPaid = paidCents >= balanceCents;
+            const appliedAmount = fromCents(isFullyPaid ? balanceCents : paidCents);
+            const change = isFullyPaid ? fromCents(paidCents - balanceCents) : 0;
+            const newBalance = isFullyPaid ? 0 : fromCents(balanceCents - paidCents);
 
             const addCash = payment_method === 'EFECTIVO' ? appliedAmount : 0;
             const addCard = (payment_method === 'TARJETA' || payment_method === 'TRANSFERENCIA') ? appliedAmount : 0;
@@ -388,7 +392,7 @@ const applyDiscount = async (req, res) => {
     const { discount_amount } = req.body;
 
     try {
-        const numericDiscount = Number(discount_amount) || 0;
+        const numericDiscount = round2(discount_amount);
         if (numericDiscount < 0) {
             return res.status(400).json({ error: 'El descuento no puede ser negativo.' });
         }

@@ -22,6 +22,10 @@ function escapeHtml(text) {
 const fmtMoney = (n) => (Number(n) || 0).toLocaleString('es-MX', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 const DIAS_SEMANA = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 // Fecha AAAA-MM-DD desplazada N días (sin depender de la zona horaria)
+// Parte de una cuenta dividida en partes iguales, redondeada al centavo hacia arriba:
+// $100 entre 3 = $33.34 por persona, así la mesa nunca queda debiendo $0.01 (el último recibe su cambio).
+const montoPorPersona = (total, personas) => Math.ceil(Math.round(total * 100) / personas) / 100;
+
 function desplazarFecha(fecha, dias) {
     const [y, m, d] = fecha.split('-').map(Number);
     return new Date(Date.UTC(y, m - 1, d + dias)).toISOString().slice(0, 10);
@@ -1454,10 +1458,10 @@ document.getElementById('btn-split-equal').onclick = async () => {
     if (!personasStr) return; 
     const personas = parseInt(personasStr); 
     if (personas <= 0) return; 
-    const montoPorPersona = currentRemainingBalance / personas; 
-    inputAmountPaid.value = montoPorPersona.toFixed(2); 
+    const porPersona = montoPorPersona(currentRemainingBalance, personas); 
+    inputAmountPaid.value = porPersona.toFixed(2); 
     calcularCambioEnVivo();
-    await customAlert(`Cada persona pagará: $${montoPorPersona.toFixed(2)}`, 'info'); 
+    await customAlert(`Cada persona pagará: $${porPersona.toFixed(2)}`, 'info'); 
 };
 
 document.getElementById('btn-split-items').onclick = () => {
@@ -2394,6 +2398,8 @@ function generatePreCheckHTML(itemsArray, title, fraction = 1, showQR = false, d
         html += `<div style="display: flex; justify-content: flex-end; gap: 15px; margin-bottom: 3px; color: #000;"><span>Descuento:</span> <span>-$${discountFrac.toFixed(2)}</span></div>`;
         totalTicket -= discountFrac;
     }
+    // Cuenta dividida: el total de cada parte se redondea al centavo hacia arriba (igual que en el cobro)
+    if (fraction > 1) totalTicket = montoPorPersona(totalTicket * fraction, fraction);
 
     html += `
             <div style="display: flex; justify-content: flex-end; gap: 15px; margin-top: 5px; font-size: 18px; font-weight: 900;">

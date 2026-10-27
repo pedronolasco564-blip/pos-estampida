@@ -666,3 +666,57 @@ describe('Auditoría con hora local', () => {
         }
     });
 });
+
+describe('Dinero exacto, migraciones y respaldos', () => {
+    const { toCents, round2, sumMoney } = require('../src/utils/money');
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+
+    test('Utilidad de dinero: sin errores de punto flotante', () => {
+        assert.equal(round2(100.10 - 33.37), 66.73);
+        assert.equal(toCents(1.005), 101);
+        assert.equal(sumMoney(0.1, 0.2), 0.3);
+        assert.equal(round2('abc'), 0);
+    });
+
+    test('Abonos con centavos liquidan la cuenta exacta y liberan la mesa', async () => {
+        const stamp = Date.now();
+        const tableId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`DIN_${stamp}`])).lastID;
+        const productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Centavos', 33.37, 'COCINA', 'GENERAL')`)).lastID;
+        const { orderId } = await (await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 3 }], is_printed: false }))).json();
+        try {
+            // 3 x 33.37 = 100.11; se paga en tres partes "redondeadas hacia arriba" como lo sugiere la caja
+            const pagar = async (monto) => (await fetch(`${testBaseUrl}/api/orders/${orderId}/pay`, json('POST', { payment_method: 'EFECTIVO', amount_paid: monto }))).json();
+            const r1 = await pagar(33.37);
+            assert.equal(r1.remaining_balance, 66.74);
+            const r2 = await pagar(33.37);
+            assert.equal(r2.remaining_balance, 33.37);
+            const r3 = await pagar(33.37);
+            assert.equal(r3.fully_paid, true);
+            assert.equal(r3.change, 0);
+            const mesa = await dbGet('SELECT status FROM tables WHERE id = ?', [tableId]);
+            assert.equal(mesa.status, 'LIBRE');
+        } finally {
+            await dbRun('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+            await dbRun('DELETE FROM orders WHERE id = ?', [orderId]);
+            await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+            await dbRun('DELETE FROM tables WHERE id = ?', [tableId]);
+        }
+    });
+
+    test('La BD queda en la última versión de migraciones', async () => {
+        const { LATEST_VERSION } = require('../src/config/migrations');
+        assert.equal((await dbGet('PRAGMA user_version')).user_version, LATEST_VERSION);
+    });
+
+    test('El respaldo diario genera una copia legible de la BD', async () => {
+        const { dailyBackup, localDate, BACKUP_DIR } = require('../src/utils/backup');
+        await dailyBackup();
+        const file = path.join(BACKUP_DIR, `auto_${localDate()}.db`);
+        assert.ok(fs.existsSync(file));
+        const sqlite3 = require('sqlite3');
+        const copia = new sqlite3.Database(file, sqlite3.OPEN_READONLY);
+        const n = await new Promise((res, rej) => copia.get('SELECT COUNT(*) AS n FROM orders', (e, r) => (e ? rej(e) : res(r.n))));
+        copia.close();
+        assert.equal(n, (await dbGet('SELECT COUNT(*) AS n FROM orders')).n);
+    });
+});

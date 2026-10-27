@@ -3,6 +3,7 @@ const path = require('path');
 const crypto = require('crypto'); // Módulo de criptografía nativo
 
 const { DB_PATH: dbPath } = require('./paths');
+const { runMigrations } = require('./migrations');
 // Se resuelve cuando tablas y datos iniciales existen (evita atender peticiones con una BD nueva a medio crear).
 let resolveReady, rejectReady;
 const ready = new Promise((res, rej) => { resolveReady = res; rejectReady = rej; });
@@ -123,10 +124,18 @@ function seedInitialData() {
     db.get(`SELECT COUNT(*) as count FROM settings WHERE key = 'admin_pin'`, (err, row) => {
         if (row && row.count === 0) {
             const defaultHash = crypto.createHash('sha256').update('1234').digest('hex');
-            db.run(`INSERT INTO settings (key, value) VALUES ('admin_pin', ?)`, [defaultHash], () => resolveReady());
+            db.run(`INSERT INTO settings (key, value) VALUES ('admin_pin', ?)`, [defaultHash], () => finishInit());
         } else {
-            resolveReady();
+            finishInit();
         }
+    });
+}
+
+// Última etapa del arranque: migraciones versionadas (con respaldo previo) y BD lista.
+function finishInit() {
+    runMigrations(db).then(() => resolveReady()).catch((err) => {
+        console.error('❌', err.message);
+        rejectReady(err);
     });
 }
 
