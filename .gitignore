@@ -1,3 +1,6 @@
 node_modules/
-pos_restaurante.db
+*.db
+*.db-shm
+*.db-wal
 .env
+dist/

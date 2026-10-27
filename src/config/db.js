@@ -2,10 +2,15 @@ const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const crypto = require('crypto'); // Módulo de criptografía nativo
 
-const dbPath = path.resolve(__dirname, '../../pos_restaurante.db');
+const { DB_PATH: dbPath } = require('./paths');
+// Se resuelve cuando tablas y datos iniciales existen (evita atender peticiones con una BD nueva a medio crear).
+let resolveReady, rejectReady;
+const ready = new Promise((res, rej) => { resolveReady = res; rejectReady = rej; });
+
 const db = new sqlite3.Database(dbPath, (err) => {
     if (err) {
         console.error('Error al conectar a la base de datos:', err.message);
+        rejectReady(err);
     } else { 
         console.log('Conectado a SQLite.'); 
         
@@ -13,6 +18,7 @@ const db = new sqlite3.Database(dbPath, (err) => {
         db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;", (err) => {
             if (err) {
                 console.error("Error al activar el escudo SQLite WAL:", err.message);
+                rejectReady(err);
             } else {
                 console.log("🛡️ Escudo Anti-Apagones (WAL) activado correctamente.");
                 initDatabase(); // Arrancamos las tablas solo cuando el escudo esté arriba
@@ -35,10 +41,6 @@ function initDatabase() {
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP, closed_at DATETIME,
         FOREIGN KEY (table_id) REFERENCES tables(id)
         )`);
-        
-        // Parche de seguridad para actualizar la tabla si ya existe
-        db.run(`ALTER TABLE orders ADD COLUMN needs_invoice INTEGER DEFAULT 0`, () => {});
-        db.run(`ALTER TABLE orders ADD COLUMN invoice_done INTEGER DEFAULT 0`, () => {});
 
         db.run(`CREATE TABLE IF NOT EXISTS order_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER, product_id INTEGER, quantity INTEGER NOT NULL, 
@@ -56,6 +58,9 @@ function initDatabase() {
         // NUEVA TABLA: Sistema de Gastos y Retiros de Caja
         db.run(`CREATE TABLE IF NOT EXISTS expenses (id INTEGER PRIMARY KEY AUTOINCREMENT, amount REAL NOT NULL, concept TEXT NOT NULL, category TEXT, created_by TEXT, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 
+        // NUEVA TABLA: Platillos tomados que aún no se envían a cocina (uno por mesa)
+        db.run(`CREATE TABLE IF NOT EXISTS order_drafts (table_id INTEGER PRIMARY KEY, items TEXT NOT NULL, waiter_name TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (table_id) REFERENCES tables(id))`);
+
         db.run(`ALTER TABLE modifiers ADD COLUMN price REAL DEFAULT 0`, () => {});
         db.run(`ALTER TABLE order_items ADD COLUMN extra_price REAL DEFAULT 0`, () => {});
         db.run(`ALTER TABLE orders ADD COLUMN needs_invoice INTEGER DEFAULT 0`, () => {});
@@ -64,6 +69,13 @@ function initDatabase() {
         // 💡 REPARACIÓN: Columnas para rastrear pagos mixtos
         db.run(`ALTER TABLE orders ADD COLUMN cash_amount REAL DEFAULT 0`, () => {});
         db.run(`ALTER TABLE orders ADD COLUMN card_amount REAL DEFAULT 0`, () => {});
+
+        // 📊 ÍNDICES para acelerar consultas frecuentes
+        db.run(`CREATE INDEX IF NOT EXISTS idx_orders_table_status ON orders(table_id, status)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_order_items_order ON order_items(order_id)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_orders_closed_at ON orders(closed_at)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_audit_logs_date ON audit_logs(created_at)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(created_at)`);
 
         seedInitialData();
     });
@@ -90,9 +102,13 @@ function seedInitialData() {
     db.get(`SELECT COUNT(*) as count FROM settings WHERE key = 'admin_pin'`, (err, row) => {
         if (row && row.count === 0) {
             const defaultHash = crypto.createHash('sha256').update('1234').digest('hex');
-            db.run(`INSERT INTO settings (key, value) VALUES ('admin_pin', ?)`, [defaultHash]);
+            db.run(`INSERT INTO settings (key, value) VALUES ('admin_pin', ?)`, [defaultHash], () => resolveReady());
+        } else {
+            resolveReady();
         }
     });
 }
+
+db.ready = ready;
 
 module.exports = db;

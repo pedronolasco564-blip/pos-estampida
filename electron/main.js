@@ -1,0 +1,185 @@
+const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell } = require('electron');
+const path = require('path');
+const fs = require('fs');
+const os = require('os');
+
+// Impresión silenciosa (equivale al --kiosk-printing de Edge): imprime directo a la impresora predeterminada de Windows.
+app.commandLine.appendSwitch('kiosk-printing');
+
+const PORT = 3000;
+let mainWindow = null;
+let splash = null;
+let tray = null;
+let backendStarted = false;
+let quitting = false;
+
+if (!app.requestSingleInstanceLock()) {
+    app.quit();
+}
+app.on('second-instance', () => {
+    if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
+});
+
+// La base de datos vive en %APPDATA%/<app>, nunca dentro del instalador.
+function prepareDataDir() {
+    const dataDir = app.getPath('userData');
+    fs.mkdirSync(dataDir, { recursive: true });
+    process.env.POS_DATA_DIR = dataDir;
+
+    // Primera ejecución: si existe una BD junto al código (versión web anterior), se copia una sola vez.
+    const target = path.join(dataDir, 'pos_restaurante.db');
+    if (!fs.existsSync(target)) {
+        const legacy = path.join(app.getAppPath(), 'pos_restaurante.db');
+        if (!app.isPackaged && fs.existsSync(legacy)) {
+            fs.copyFileSync(legacy, target);
+        }
+    }
+    return dataDir;
+}
+
+// Respaldo automático al iniciar: conserva las últimas 14 copias.
+function autoBackup(dataDir) {
+    try {
+        const db = path.join(dataDir, 'pos_restaurante.db');
+        if (!fs.existsSync(db)) return;
+        const dir = path.join(dataDir, 'respaldos');
+        fs.mkdirSync(dir, { recursive: true });
+        const stamp = new Date().toISOString().slice(0, 10);
+        const dest = path.join(dir, `auto_${stamp}.db`);
+        if (!fs.existsSync(dest)) fs.copyFileSync(db, dest);
+        fs.readdirSync(dir).filter(f => f.startsWith('auto_')).sort().reverse().slice(14)
+            .forEach(f => fs.unlinkSync(path.join(dir, f)));
+    } catch (e) { console.error('Respaldo automático falló:', e.message); }
+}
+
+// Actualizaciones desde GitHub Releases. Se descargan solas y se instalan al cerrar el sistema,
+// nunca a media jornada, para no cortar el servicio a los meseros.
+function setupAutoUpdate() {
+    if (!app.isPackaged) return;
+    const { autoUpdater } = require('electron-updater');
+    autoUpdater.autoInstallOnAppQuit = true;
+    autoUpdater.on('error', (e) => console.error('Actualizador:', e.message));
+    autoUpdater.on('update-downloaded', (info) => {
+        if (tray) tray.setToolTip(`POS La Estampida: v${info.version} se instalará al cerrar el sistema`);
+    });
+    const check = () => autoUpdater.checkForUpdates().catch(() => {});
+    check();
+    setInterval(check, 4 * 60 * 60 * 1000);
+}
+
+function createSplash() {
+    splash = new BrowserWindow({ width: 450, height: 550, frame: false, resizable: false, alwaysOnTop: true, backgroundColor: '#1a1a1a' });
+    splash.loadFile(path.join(app.getAppPath(), 'splash.html'));
+}
+
+function createMainWindow() {
+    mainWindow = new BrowserWindow({
+        width: 1366, height: 768, show: false, backgroundColor: '#1a1a1a',
+        autoHideMenuBar: true,
+        webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true }
+    });
+    mainWindow.maximize();
+    mainWindow.loadURL(`http://localhost:${PORT}`);
+    mainWindow.once('ready-to-show', () => {
+        if (splash) { splash.close(); splash = null; }
+        mainWindow.show();
+    });
+    // Cerrar la ventana no apaga el servidor: los meseros siguen conectados. Se oculta a la bandeja.
+    mainWindow.on('close', (e) => {
+        if (!quitting) { e.preventDefault(); mainWindow.hide(); }
+    });
+}
+
+function createTray() {
+    const iconPath = path.join(app.getAppPath(), 'public', 'logo.jpg');
+    tray = new Tray(nativeImage.createFromPath(iconPath).resize({ width: 16, height: 16 }));
+    tray.setToolTip('POS La Estampida (servidor activo)');
+    tray.setContextMenu(Menu.buildFromTemplate([
+        { label: 'Abrir caja', click: () => { mainWindow.show(); mainWindow.focus(); } },
+        { label: 'Dirección para celulares', click: showPhoneAddress },
+        { label: 'Diagnóstico', click: showDiagnostics },
+        { label: 'Abrir carpeta de respaldos', click: () => shell.openPath(path.join(app.getPath('userData'), 'respaldos')) },
+        { type: 'separator' },
+        { label: 'Salir (desconecta a los meseros)', click: confirmQuit }
+    ]));
+    tray.on('double-click', () => { mainWindow.show(); mainWindow.focus(); });
+}
+
+// Direcciones por las que los celulares pueden entrar (red local).
+function lanUrls() {
+    const urls = [];
+    for (const list of Object.values(os.networkInterfaces())) {
+        for (const i of list || []) {
+            if (i.family === 'IPv4' && !i.internal) urls.push(`http://${i.address}:${PORT}`);
+        }
+    }
+    return urls;
+}
+
+function showPhoneAddress() {
+    const urls = lanUrls();
+    dialog.showMessageBox(mainWindow, {
+        type: 'info', title: 'Dirección para celulares', buttons: ['Cerrar'],
+        message: urls.length ? 'Los meseros deben abrir esta dirección en el navegador del celular:' : 'No se detectó conexión a una red.',
+        detail: urls.length ? urls.join('\n') + '\n\nEl celular debe estar conectado al mismo Wi-Fi que esta PC.' : 'Conecta esta PC al Wi-Fi o a la red del local.'
+    });
+}
+
+// Resumen para soporte: permite ver de un vistazo si todo está en orden sin abrir carpetas.
+async function showDiagnostics() {
+    const dataDir = app.getPath('userData');
+    const lines = [`Versión: ${app.getVersion()}`, `Datos: ${dataDir}`];
+    try {
+        const st = fs.statSync(path.join(dataDir, 'pos_restaurante.db'));
+        lines.push(`Base de datos: ${(st.size / 1024).toFixed(0)} KB (modificada ${st.mtime.toLocaleString()})`);
+    } catch (_) { lines.push('Base de datos: NO ENCONTRADA'); }
+    try {
+        const backups = fs.readdirSync(path.join(dataDir, 'respaldos')).filter(f => f.startsWith('auto_')).sort();
+        lines.push(`Último respaldo: ${backups.length ? backups[backups.length - 1] : 'ninguno'}`);
+    } catch (_) { lines.push('Último respaldo: ninguno'); }
+    const urls = lanUrls();
+    lines.push(`Celulares: ${urls.length ? urls.join('  ') : 'sin red detectada'}`);
+    try {
+        const printers = await mainWindow.webContents.getPrintersAsync();
+        const def = printers.find(p => p.isDefault);
+        lines.push(`Impresora predeterminada: ${def ? def.name : 'NINGUNA (los tickets no saldrán directo)'}`);
+        lines.push(`Impresoras en Windows: ${printers.map(p => p.name).join(', ') || 'ninguna'}`);
+        const esc = process.env.POS_PRINTER || '//localhost/CajaEstampida';
+        const shared = esc.split('/').pop();
+        lines.push(`Impresora de comandas (ESC/POS) "${shared}": ${printers.some(p => p.name === shared) ? 'encontrada' : 'NO encontrada en Windows'}`);
+    } catch (e) { lines.push(`Impresoras: error (${e.message})`); }
+    dialog.showMessageBox(mainWindow, { type: 'info', title: 'Diagnóstico', buttons: ['Cerrar'], message: 'Diagnóstico del sistema', detail: lines.join('\n') });
+}
+
+async function confirmQuit() {
+    const { response } = await dialog.showMessageBox({
+        type: 'warning', buttons: ['Cancelar', 'Cerrar sistema'], defaultId: 0, cancelId: 0,
+        title: 'Cerrar POS', message: '¿Cerrar el sistema?', detail: 'Los meseros perderán la conexión.'
+    });
+    if (response === 1) { quitting = true; app.quit(); }
+}
+
+app.whenReady().then(async () => {
+    createSplash();
+    try {
+        const dataDir = prepareDataDir();
+        autoBackup(dataDir);
+        // Se requiere después de definir POS_DATA_DIR para que la BD se abra en la carpeta correcta.
+        const { start } = require(path.join(app.getAppPath(), 'server.js'));
+        await start(PORT);
+        backendStarted = true;
+    } catch (err) {
+        dialog.showErrorBox('No se pudo iniciar el servidor',
+            err.code === 'EADDRINUSE' ? `El puerto ${PORT} ya está en uso. ¿Hay otra copia del POS abierta?` : err.message);
+        quitting = true; app.quit(); return;
+    }
+    createMainWindow();
+    createTray();
+
+    // Que el POS se abra solo al encender la PC (solo en la versión instalada).
+    if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true });
+    setupAutoUpdate();
+});
+
+app.on('before-quit', () => { quitting = true; });
+app.on('window-all-closed', () => { /* se mantiene vivo en la bandeja */ });

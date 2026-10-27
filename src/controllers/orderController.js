@@ -1,322 +1,481 @@
-const db = require('../config/db');
-const crypto = require('crypto');
+const { dbGet, dbAll, dbRun, dbTransaction } = require('../utils/dbHelper');
+const { emitUpdate } = require('../utils/emitUpdate');
+const { emitDraft } = require('./draftController');
 
-function verifyPin(inputPin, res, callback) {
-    const hash = crypto.createHash('sha256').update(inputPin || '').digest('hex');
-    db.get(`SELECT value FROM settings WHERE key = 'admin_pin'`, [], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!row || row.value !== hash) return res.status(403).json({ error: 'PIN INCORRECTO' });
-        callback(); 
-    });
+/**
+ * Reutilizable: Hidrata una orden con sus platillos asociados.
+ */
+async function hydrateOrderWithItems(order) {
+    if (!order) return null;
+    const items = await dbAll(
+        `SELECT oi.*, p.name, p.price 
+         FROM order_items oi 
+         JOIN products p ON oi.product_id = p.id 
+         WHERE oi.order_id = ?`,
+        [order.id]
+    );
+    order.items = items;
+    return order;
 }
 
-const getTableOrder = (req, res) => {
-    const { tableId } = req.params;
-    db.get(`SELECT * FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [tableId], (err, order) => {
-        if (err) return res.status(500).json({ error: err.message });
-        req.app.get('io').emit('update-tables');
-        if (!order) return res.json({ order: null });
+/**
+ * Recalcula el total y el saldo restante de una orden basándose en sus items y descuentos.
+ * Retorna una Promesa para garantizar que el cálculo finalice antes de responder al cliente.
+ */
+async function updateOrderTotal(orderId) {
+    const orderRow = await dbGet(`SELECT total, remaining_balance, discount_amount FROM orders WHERE id = ?`, [orderId]);
+    if (!orderRow) return;
 
-        db.all(`SELECT oi.*, p.name, p.price FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?`, [order.id], (err, items) => {
-            if (err) return res.status(500).json({ error: err.message });
-            order.items = items;
-            req.app.get('io').emit('update-tables');
-            res.json({ order });
-        });
-    });
+    const oldTotal = Number(orderRow.total) || 0;
+    const oldRemaining = Number(orderRow.remaining_balance) || 0;
+    const discount = Number(orderRow.discount_amount) || 0;
+
+    const row = await dbGet(
+        `SELECT SUM(oi.quantity * (p.price + IFNULL(oi.extra_price, 0))) as new_total 
+         FROM order_items oi 
+         JOIN products p ON oi.product_id = p.id 
+         WHERE oi.order_id = ?`,
+        [orderId]
+    );
+
+    let rawTotal = row && row.new_total ? Number(row.new_total) : 0;
+    let newTotal = rawTotal - discount;
+    if (newTotal < 0) newTotal = 0;
+
+    const difference = newTotal - oldTotal;
+    let newRemaining = oldRemaining + difference;
+    if (newRemaining < 0) newRemaining = 0;
+
+    await dbRun(`UPDATE orders SET total = ?, remaining_balance = ? WHERE id = ?`, [newTotal, newRemaining, orderId]);
+}
+
+// ========================================================
+// ENDPOINTS
+// ========================================================
+
+const getTableOrder = async (req, res) => {
+    try {
+        const { tableId } = req.params;
+        const order = await dbGet(`SELECT * FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [tableId]);
+        if (!order) {
+            return res.json({ order: null });
+        }
+
+        await hydrateOrderWithItems(order);
+        res.json({ order });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const getOrderById = (req, res) => {
-    const { id } = req.params;
-    db.get(`SELECT * FROM orders WHERE id = ?`, [id], (err, order) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+const getOrderById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const order = await dbGet(`SELECT * FROM orders WHERE id = ?`, [id]);
+        if (!order) {
+            return res.status(404).json({ error: 'Orden no encontrada' });
+        }
 
-        db.all(`SELECT oi.*, p.name, p.price FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?`, [id], (err, items) => {
-            if (err) return res.status(500).json({ error: err.message });
-            order.items = items;
-            req.app.get('io').emit('update-tables');
-            res.json({ order });
-        });
-    });
+        await hydrateOrderWithItems(order);
+        res.json({ order });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const createOrder = (req, res) => {
-    const { table_id, waiter_name, items, is_printed, guests } = req.body;
+const createOrder = async (req, res) => {
+    const { table_id, waiter_name, items = [], is_printed, guests = 1 } = req.body;
     const printNote = is_printed === false ? ' (Ahorro papel: Sin imprimir)' : '';
 
-    db.run(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [table_id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        db.run(`INSERT INTO orders (table_id, waiter_name, guests) VALUES (?, ?, ?)`, [table_id, waiter_name, guests], function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            const orderId = this.lastID;
-            
-            // 🛡️ REPARACIÓN: db.serialize obliga a SQLite a hacer una fila india perfecta.
-            // Primero guarda TODOS los platillos sin falta, y HASTA QUE TERMINA, calcula el total.
-            db.serialize(() => {
-                const stmt = db.prepare(`INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) VALUES (?, ?, ?, ?, ?, ?, 0)`);
-                items.forEach(item => stmt.run(orderId, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0));
-                stmt.finalize();
-                
-                // Ahora sí, con la certeza de que no falta ningún platillo, suma.
-                updateOrderTotal(orderId);
-            });
-            
-            db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, 
-                ['CREAR_ORDEN', `Orden #${orderId} abierta en Mesa ID ${table_id}${printNote}`, waiter_name]);
-            
-            res.status(201).json({ message: 'Orden creada', orderId });
+    try {
+        const orderId = await dbTransaction(async () => {
+            await dbRun(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [table_id]);
+            const orderRes = await dbRun(
+                `INSERT INTO orders (table_id, waiter_name, guests) VALUES (?, ?, ?)`,
+                [table_id, waiter_name, guests]
+            );
+            const newOrderId = orderRes.lastID;
+
+            for (const item of items) {
+                await dbRun(
+                    `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) 
+                     VALUES (?, ?, ?, ?, ?, ?, 0)`,
+                    [
+                        newOrderId,
+                        item.product_id,
+                        item.quantity,
+                        item.notes || '',
+                        item.is_takeaway ? 1 : 0,
+                        item.extra_price || 0
+                    ]
+                );
+            }
+
+            // Esperar obligatoriamente a que termine el cálculo de total
+            await updateOrderTotal(newOrderId);
+
+            // Lo que estaba en borrador ya se envió a cocina
+            await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [table_id]);
+
+            await dbRun(
+                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                ['CREAR_ORDEN', `Orden #${newOrderId} abierta en Mesa ID ${table_id}${printNote}`, waiter_name]
+            );
+
+            return newOrderId;
         });
-    });
+
+        emitDraft(req, { table_id: Number(table_id), items: [], sent: true, device_id: String(req.body.device_id || '') });
+        emitUpdate(req);
+
+        res.status(201).json({ message: 'Orden creada', orderId });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
 const addItemsToOrder = async (req, res) => {
     const { id } = req.params;
-    const { items, is_printed } = req.body;
+    const { items = [], is_printed } = req.body;
     const printNote = is_printed === false ? ' (Ahorro papel: Sin imprimir)' : '';
 
     try {
-        // Usamos un ciclo asíncrono para agrupar inteligentemente en la base de datos
-        for (let item of items) {
-            await new Promise((resolve, reject) => {
-                // 1. Buscamos si ya existe EXACTAMENTE el mismo platillo (mismo id, sin pagar y con las mismas notas)
-                db.get(
-                    `SELECT id FROM order_items WHERE order_id = ? AND product_id = ? AND notes = ? AND is_takeaway = ? AND extra_price = ? AND paid = 0`,
-                    [id, item.product_id, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0],
-                    (err, row) => {
-                        if (err) return reject(err);
-                        
-                        if (row) {
-                            // 2. Si ya existe, NO creamos otro renglón, solo sumamos la cantidad al existente
-                            db.run(`UPDATE order_items SET quantity = quantity + ? WHERE id = ?`, [item.quantity, row.id], (err) => {
-                                if (err) reject(err); else resolve();
-                            });
-                        } else {
-                            // 3. Si no existe (o tiene una nota especial distinta), creamos un renglón nuevo
-                            db.run(
-                                `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) VALUES (?, ?, ?, ?, ?, ?, 0)`,
-                                [id, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0],
-                                (err) => {
-                                    if (err) reject(err); else resolve();
-                                }
-                            );
-                        }
-                    }
+        let draftTableId = null;
+        await dbTransaction(async () => {
+            for (const item of items) {
+                const existing = await dbGet(
+                    `SELECT id FROM order_items 
+                     WHERE order_id = ? AND product_id = ? AND notes = ? AND is_takeaway = ? AND extra_price = ? AND paid = 0`,
+                    [id, item.product_id, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0]
                 );
-            });
-        }
 
-        // Actualizamos el gran total de la mesa
-        updateOrderTotal(id);
+                if (existing) {
+                    await dbRun(`UPDATE order_items SET quantity = quantity + ? WHERE id = ?`, [item.quantity, existing.id]);
+                } else {
+                    await dbRun(
+                        `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) 
+                         VALUES (?, ?, ?, ?, ?, ?, 0)`,
+                        [id, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, item.extra_price || 0]
+                    );
+                }
+            }
 
-        db.get(`SELECT waiter_name FROM orders WHERE id = ?`, [id], (err, order) => {
+            // Esperar obligatoriamente al recálculo
+            await updateOrderTotal(id);
+
+            const order = await dbGet(`SELECT waiter_name, table_id FROM orders WHERE id = ?`, [id]);
             const waiter = order ? order.waiter_name : 'Sistema';
-            db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, 
-                ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden #${id}${printNote}`, waiter]);
+            if (order) {
+                // Lo que estaba en borrador ya se envió a cocina
+                draftTableId = order.table_id;
+                await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [draftTableId]);
+            }
+            await dbRun(
+                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden #${id}${printNote}`, waiter]
+            );
         });
-        
-        req.app.get('io').emit('update-tables');
+
+        if (draftTableId) emitDraft(req, { table_id: draftTableId, items: [], sent: true, device_id: String(req.body.device_id || '') });
+        emitUpdate(req);
+
         res.json({ message: 'Items agregados y agrupados correctamente' });
-        
-    } catch (error) {
-        res.status(500).json({ error: error.message });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
     }
 };
 
-const payOrder = (req, res) => {
+const payOrder = async (req, res) => {
     const { id } = req.params;
     const { payment_method, amount_paid, items_to_pay, tip_amount = 0, needs_invoice = false } = req.body;
     const invoiceFlag = needs_invoice ? 1 : 0;
+    const numericPaid = Number(amount_paid) || 0;
+    const numericTip = Number(tip_amount) || 0;
 
-    db.get(`SELECT * FROM orders WHERE id = ?`, [id], (err, order) => {
-        if (err || !order) return res.status(500).json({ error: 'Orden no encontrada' });
-        
-        const processItems = async () => {
-            if (!items_to_pay || items_to_pay.length === 0) return;
-            for (let it of items_to_pay) {
-                await new Promise((resolve) => {
-                    db.get(`SELECT * FROM order_items WHERE id = ?`, [it.id], (err, row) => {
-                        if (row && row.paid === 0) {
-                            if (row.quantity === it.qty) {
-                                db.run(`UPDATE order_items SET paid = 1 WHERE id = ?`, [it.id], resolve);
-                            } else if (row.quantity > it.qty) {
-                                db.run(`UPDATE order_items SET quantity = ? WHERE id = ?`, [row.quantity - it.qty, it.id], () => {
-                                    db.run(`INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) VALUES (?, ?, ?, ?, ?, ?, 1)`, 
-                                        [row.order_id, row.product_id, it.qty, row.notes, row.is_takeaway, row.extra_price], resolve);
-                                });
-                            } else { resolve(); }
-                        } else { resolve(); }
-                    });
-                });
+    if (numericPaid < 0 || numericTip < 0) {
+        return res.status(400).json({ error: 'Los montos no pueden ser negativos.' });
+    }
+
+    try {
+        const order = await dbGet(`SELECT * FROM orders WHERE id = ?`, [id]);
+        if (!order) {
+            return res.status(404).json({ error: 'Orden no encontrada' });
+        }
+
+        const result = await dbTransaction(async () => {
+            // Procesamiento de ítems específicos a pagar (si aplica división de cuenta)
+            if (Array.isArray(items_to_pay) && items_to_pay.length > 0) {
+                for (const it of items_to_pay) {
+                    const row = await dbGet(`SELECT * FROM order_items WHERE id = ?`, [it.id]);
+                    if (row && row.paid === 0) {
+                        if (row.quantity === it.qty) {
+                            await dbRun(`UPDATE order_items SET paid = 1 WHERE id = ?`, [it.id]);
+                        } else if (row.quantity > it.qty) {
+                            await dbRun(`UPDATE order_items SET quantity = ? WHERE id = ?`, [row.quantity - it.qty, it.id]);
+                            await dbRun(
+                                `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) 
+                                 VALUES (?, ?, ?, ?, ?, ?, 1)`,
+                                [row.order_id, row.product_id, it.qty, row.notes, row.is_takeaway, row.extra_price]
+                            );
+                        }
+                    }
+                }
             }
-        };
 
-        processItems().then(() => {
-            let currentBalance = (order.remaining_balance !== null && order.remaining_balance !== undefined) ? order.remaining_balance : order.total;
-            
-            // Calculamos cuánto del pago realmente cubre la deuda (ignorando el cambio)
-            const isFullyPaid = amount_paid >= currentBalance;
-            const appliedAmount = isFullyPaid ? currentBalance : amount_paid;
-            const change = isFullyPaid ? amount_paid - currentBalance : 0;
-            const newBalance = isFullyPaid ? 0 : currentBalance - amount_paid;
+            const currentBalance = (order.remaining_balance !== null && order.remaining_balance !== undefined)
+                ? Number(order.remaining_balance)
+                : Number(order.total);
 
-            // Ruteamos el dinero a su columna correspondiente
+            const isFullyPaid = numericPaid >= currentBalance;
+            const appliedAmount = isFullyPaid ? currentBalance : numericPaid;
+            const change = isFullyPaid ? numericPaid - currentBalance : 0;
+            const newBalance = isFullyPaid ? 0 : currentBalance - numericPaid;
+
             const addCash = payment_method === 'EFECTIVO' ? appliedAmount : 0;
             const addCard = (payment_method === 'TARJETA' || payment_method === 'TRANSFERENCIA') ? appliedAmount : 0;
 
             if (isFullyPaid) {
-                db.run(`UPDATE orders SET status = 'PAGADA', payment_method = ?, 
-                        cash_amount = IFNULL(cash_amount, 0) + ?, card_amount = IFNULL(card_amount, 0) + ?,
-                        amount_paid = IFNULL(amount_paid, 0) + ?, change_amount = IFNULL(change_amount, 0) + ?, 
-                        remaining_balance = 0, tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ?, closed_at = datetime('now', '-6 hours') WHERE id = ?`, 
-                    [payment_method, addCash, addCard, amount_paid, change, tip_amount, invoiceFlag, id], function(err) {
-                    if (err) return res.status(500).json({ error: err.message });
-                    db.run(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
-                    req.app.get('io').emit('update-tables');
-                    res.json({ message: 'Orden pagada por completo', change, fully_paid: true });
-                });
+                await dbRun(
+                    `UPDATE orders SET status = 'PAGADA', payment_method = ?, 
+                     cash_amount = IFNULL(cash_amount, 0) + ?, card_amount = IFNULL(card_amount, 0) + ?,
+                     amount_paid = IFNULL(amount_paid, 0) + ?, change_amount = IFNULL(change_amount, 0) + ?, 
+                     remaining_balance = 0, tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ?, 
+                     closed_at = datetime('now', '-6 hours') WHERE id = ?`,
+                    [payment_method, addCash, addCard, numericPaid, change, numericTip, invoiceFlag, id]
+                );
+
+                await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
+
+                return {
+                    response: { message: 'Orden pagada por completo', change, fully_paid: true }
+                };
             } else {
-                db.run(`UPDATE orders SET remaining_balance = ?, payment_method = 'MIXTO', 
-                        cash_amount = IFNULL(cash_amount, 0) + ?, card_amount = IFNULL(card_amount, 0) + ?,
-                        tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ? WHERE id = ?`, 
-                    [newBalance, addCash, addCard, tip_amount, invoiceFlag, id], function(err) {
-                    if (err) return res.status(500).json({ error: err.message });
-                    req.app.get('io').emit('update-tables');
-                    res.json({ message: 'Abono registrado', remaining_balance: newBalance, fully_paid: false });
-                });
+                await dbRun(
+                    `UPDATE orders SET remaining_balance = ?, payment_method = 'MIXTO', 
+                     cash_amount = IFNULL(cash_amount, 0) + ?, card_amount = IFNULL(card_amount, 0) + ?,
+                     tip_amount = IFNULL(tip_amount, 0) + ?, needs_invoice = ? WHERE id = ?`,
+                    [newBalance, addCash, addCard, numericTip, invoiceFlag, id]
+                );
+
+                return {
+                    response: { message: 'Abono registrado', remaining_balance: newBalance, fully_paid: false }
+                };
             }
         });
-    });
+
+        emitUpdate(req);
+
+        res.json(result.response);
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-function updateOrderTotal(orderId, callback) {
-    db.get(`SELECT total, remaining_balance, discount_amount FROM orders WHERE id = ?`, [orderId], (err, orderRow) => {
-        const oldTotal = orderRow ? orderRow.total : 0;
-        const oldRemaining = orderRow ? orderRow.remaining_balance : 0;
-        const discount = orderRow ? (orderRow.discount_amount || 0) : 0;
+const cancelItem = async (req, res) => {
+    const { orderId, itemId } = req.params;
+    const { reason } = req.body;
 
-        db.get(`SELECT SUM(oi.quantity * (p.price + IFNULL(oi.extra_price, 0))) as new_total FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.order_id = ?`, [orderId], (err, row) => {
-            let newTotal = (row ? (row.new_total || 0) : 0) - discount;
-            if (newTotal < 0) newTotal = 0; 
-            
-            const difference = newTotal - oldTotal;
-            let newRemaining = oldRemaining + difference; 
-            if (newRemaining < 0) newRemaining = 0;
+    try {
 
-            db.run(`UPDATE orders SET total = ?, remaining_balance = ? WHERE id = ?`, [newTotal, newRemaining, orderId], () => {
-                if (callback) callback();
-            });
-        });
-    });
-}
+        const item = await dbGet(
+            `SELECT oi.paid, oi.quantity, p.name 
+             FROM order_items oi 
+             JOIN products p ON oi.product_id = p.id 
+             WHERE oi.id = ?`,
+            [itemId]
+        );
 
-const cancelItem = (req, res) => {
-    const { orderId, itemId } = req.params; const { pin, reason } = req.body; 
-    verifyPin(pin, res, () => {
-        db.get(`SELECT oi.paid, oi.quantity, p.name FROM order_items oi JOIN products p ON oi.product_id = p.id WHERE oi.id = ?`, [itemId], (err, item) => {
-            if (!item) return res.status(404).json({ error: 'Platillo no encontrado' });
-            if (item.paid === 1) return res.status(400).json({ error: 'Ya fue pagado.' });
-            
-            // 💡 REPARACIÓN: Si hay varios, solo resta 1. Si es el último, borra el renglón.
-            const query = item.quantity > 1 
+        if (!item) return res.status(404).json({ error: 'Platillo no encontrado' });
+        if (item.paid === 1) return res.status(400).json({ error: 'Ya fue pagado.' });
+
+        await dbTransaction(async () => {
+            const query = item.quantity > 1
                 ? `UPDATE order_items SET quantity = quantity - 1 WHERE id = ? AND order_id = ?`
                 : `DELETE FROM order_items WHERE id = ? AND order_id = ?`;
 
-            db.run(query, [itemId, orderId], function(err) {
-                updateOrderTotal(orderId);
-                db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, ['CANCELAR_PLATILLO', `Se canceló 1x "${item.name}". Motivo: ${reason || 'N/A'}`, 'Admin']);
-                req.app.get('io').emit('update-tables');
-                res.json({ message: 'Cancelado' });
-            });
+            await dbRun(query, [itemId, orderId]);
+            await updateOrderTotal(orderId);
+            await dbRun(
+                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                ['CANCELAR_PLATILLO', `Se canceló 1x "${item.name}". Motivo: ${reason || 'N/A'}`, 'Admin']
+            );
         });
-    });
+
+        emitUpdate(req);
+
+        res.json({ message: 'Cancelado' });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const cancelOrder = (req, res) => {
-    const { id } = req.params; const { pin, reason } = req.body; 
-    verifyPin(pin, res, () => {
-        db.get(`SELECT table_id FROM orders WHERE id = ?`, [id], (err, order) => {
-            db.serialize(() => {
-                db.run(`DELETE FROM order_items WHERE order_id = ?`, [id]);
-                db.run(`DELETE FROM orders WHERE id = ?`, [id]);
-                db.run(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
-
-                // NUEVO: Rastro de auditoría para la cancelación total
-                db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, 
-                    ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden #${id} de la Mesa ID ${order.table_id}. Motivo: ${reason}`, 'Administrador']);
-                req.app.get('io').emit('update-tables');
-                res.json({ message: 'Cancelada' });
-            });
-        });
-    });
-};
-
-const transferOrder = (req, res) => {
-    const { id } = req.params; const { new_table_id } = req.body;
-    db.get(`SELECT table_id FROM orders WHERE id = ?`, [id], (err, order) => {
-        db.run(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [new_table_id], () => {
-            db.run(`UPDATE orders SET table_id = ? WHERE id = ?`, [new_table_id, id], () => { 
-                req.app.get('io').emit('update-tables');
-                db.run(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id], () => { res.json({ message: 'Transferida' }); });
-            });
-        });
-    });
-};
-
-const applyDiscount = (req, res) => {
-    const { id } = req.params; const { pin, discount_amount } = req.body;
-    verifyPin(pin, res, () => {
-        db.run(`UPDATE orders SET discount_amount = ? WHERE id = ?`, [discount_amount, id], function() {
-            
-            // NUEVO: Rastro de auditoría para descuentos
-            db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, 
-                ['DESCUENTO_APLICADO', `Descuento de $${discount_amount} aplicado a la Orden #${id}`, 'Administrador']);
-                
-            req.app.get('io').emit('update-tables');
-            updateOrderTotal(id, () => { res.json({ message: 'Descuento aplicado' }); });
-        });
-    });
-};
-
-const reopenOrder = (req, res) => {
-    const { id } = req.params; const { pin } = req.body;
-    verifyPin(pin, res, () => {
-        db.get(`SELECT * FROM orders WHERE id = ?`, [id], (err, order) => {
-            db.serialize(() => {
-                db.run(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [order.table_id]);
-                db.run(`UPDATE orders SET status = 'ABIERTA', amount_paid = 0, tip_amount = 0, change_amount = 0, closed_at = NULL, remaining_balance = total WHERE id = ?`, [id]);
-                db.run(`UPDATE order_items SET paid = 0 WHERE order_id = ?`, [id]);
-                
-                // NUEVO: Rastro de auditoría para cuentas reabiertas
-                db.run(`INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`, 
-                    ['REABRIR_CUENTA', `Cuenta #${id} reabierta por administrador. Pagos anulados.`, 'Administrador']);
-                    
-                req.app.get('io').emit('update-tables');
-                res.json({ message: 'Reabierta' });
-            });
-        });
-    });
-};
-
-const toggleInvoiceStatus = (req, res) => {
+const cancelOrder = async (req, res) => {
     const { id } = req.params;
-    db.get(`SELECT invoice_done FROM orders WHERE id = ?`, [id], (err, order) => {
-        if (err || !order) return res.status(500).json({ error: 'Orden no encontrada' });
+    const { reason } = req.body;
+
+    try {
+
+        const order = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [id]);
+        if (!order) {
+            return res.status(404).json({ error: 'Orden no encontrada' });
+        }
+
+        await dbTransaction(async () => {
+            await dbRun(`DELETE FROM order_items WHERE order_id = ?`, [id]);
+            await dbRun(`DELETE FROM orders WHERE id = ?`, [id]);
+            await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
+            await dbRun(
+                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden #${id} de la Mesa ID ${order.table_id}. Motivo: ${reason || 'N/A'}`, 'Administrador']
+            );
+        });
+
+        emitUpdate(req);
+
+        res.json({ message: 'Cancelada' });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const transferOrder = async (req, res) => {
+    const { id } = req.params;
+    const { new_table_id } = req.body;
+
+    try {
+        const order = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [id]);
+        if (!order) {
+            return res.status(404).json({ error: 'Orden no encontrada' });
+        }
+
+        await dbTransaction(async () => {
+            await dbRun(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [new_table_id]);
+            await dbRun(`UPDATE orders SET table_id = ? WHERE id = ?`, [new_table_id, id]);
+            await dbRun(`UPDATE OR IGNORE order_drafts SET table_id = ? WHERE table_id = ?`, [new_table_id, order.table_id]);
+            await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
+        });
+
+        emitUpdate(req);
+
+        res.json({ message: 'Transferida' });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const applyDiscount = async (req, res) => {
+    const { id } = req.params;
+    const { discount_amount } = req.body;
+
+    try {
+        const numericDiscount = Number(discount_amount) || 0;
+        if (numericDiscount < 0) {
+            return res.status(400).json({ error: 'El descuento no puede ser negativo.' });
+        }
+
+        await dbTransaction(async () => {
+            await dbRun(`UPDATE orders SET discount_amount = ? WHERE id = ?`, [numericDiscount, id]);
+            await dbRun(
+                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                ['DESCUENTO_APLICADO', `Descuento de $${numericDiscount} aplicado a la Orden #${id}`, 'Administrador']
+            );
+            await updateOrderTotal(id);
+        });
+
+        emitUpdate(req);
+
+        res.json({ message: 'Descuento aplicado' });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const reopenOrder = async (req, res) => {
+    const { id } = req.params;
+    try {
+
+        const order = await dbGet(`SELECT * FROM orders WHERE id = ?`, [id]);
+        if (!order) {
+            return res.status(404).json({ error: 'Orden no encontrada' });
+        }
+
+        await dbTransaction(async () => {
+            await dbRun(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [order.table_id]);
+            await dbRun(
+                `UPDATE orders SET status = 'ABIERTA', amount_paid = 0, tip_amount = 0, change_amount = 0, 
+                 closed_at = NULL, remaining_balance = total WHERE id = ?`,
+                [id]
+            );
+            await dbRun(`UPDATE order_items SET paid = 0 WHERE order_id = ?`, [id]);
+            await dbRun(
+                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                ['REABRIR_CUENTA', `Cuenta #${id} reabierta por administrador. Pagos anulados.`, 'Administrador']
+            );
+        });
+
+        emitUpdate(req);
+
+        res.json({ message: 'Reabierta' });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const toggleInvoiceStatus = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const order = await dbGet(`SELECT invoice_done FROM orders WHERE id = ?`, [id]);
+        if (!order) {
+            return res.status(404).json({ error: 'Orden no encontrada' });
+        }
+
         const newStatus = order.invoice_done === 1 ? 0 : 1;
-        db.run(`UPDATE orders SET invoice_done = ? WHERE id = ?`, [newStatus, id], function(err) {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ message: 'Estado de factura actualizado', invoice_done: newStatus });
-        });
-    });
+        await dbRun(`UPDATE orders SET invoice_done = ? WHERE id = ?`, [newStatus, id]);
+
+        res.json({ message: 'Estado de factura actualizado', invoice_done: newStatus });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const updatePax = (req, res) => {
-    const { id } = req.params;
-    const { guests } = req.body;
-    db.run(`UPDATE orders SET guests = ? WHERE id = ?`, [guests, id], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        req.app.get('io').emit('update-tables');
+const updatePax = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { guests } = req.body;
+        await dbRun(`UPDATE orders SET guests = ? WHERE id = ?`, [Number(guests) || 1, id]);
+
+        emitUpdate(req);
+
         res.json({ message: 'PAX actualizado' });
-    });
+    } catch (err) {
+        console.error('[OrderController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
-module.exports = { getTableOrder, getOrderById, createOrder, addItemsToOrder, payOrder, cancelItem, cancelOrder, transferOrder, applyDiscount, reopenOrder, toggleInvoiceStatus, updatePax };
+
+module.exports = {
+    getTableOrder,
+    getOrderById,
+    createOrder,
+    addItemsToOrder,
+    payOrder,
+    cancelItem,
+    cancelOrder,
+    transferOrder,
+    applyDiscount,
+    reopenOrder,
+    toggleInvoiceStatus,
+    updatePax,
+    updateOrderTotal // Exportado para pruebas unitarias
+};

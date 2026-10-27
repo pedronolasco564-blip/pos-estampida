@@ -1,223 +1,216 @@
-const db = require('../config/db');
 const path = require('path');
-const crypto = require('crypto');
+const { dbGet, dbAll, dbRun, dbExec } = require('../utils/dbHelper');
+const { verifyAdminPin } = require('../middleware/verifyPin');
+const { calculateCorteData } = require('../services/reportService');
 
 let printerService = null;
-try { printerService = require('../services/printerService'); } catch(e) { console.log("Aviso: Módulo de impresora no cargado."); }
+try {
+    printerService = require('../services/printerService');
+} catch (e) {
+    console.log("Aviso: Módulo de impresora no cargado.");
+}
 
-const getCorte = (req, res) => {
-    const targetDate = req.query.date; 
+const getCorte = async (req, res) => {
+    try {
+        const targetDate = req.query.date;
+        if (!targetDate) {
+            return res.status(400).json({ error: 'Fecha requerida para el corte.' });
+        }
 
-    const ordersQuery = `SELECT o.*, t.table_number FROM orders o JOIN tables t ON o.table_id = t.id WHERE o.status = 'PAGADA' AND DATE(o.closed_at) = ?`;
-
-    db.all(ordersQuery, [targetDate], (err, orders) => {
-        if (err) return res.status(500).json({ error: err.message });
-
-        // 🛑 AQUÍ QUITAMOS EL LOCALTIME PORQUE YA ESTÁ GUARDADO CON LA HORA CORRECTA
-        db.all(`SELECT * FROM expenses WHERE DATE(created_at) = ?`, [targetDate], (err, expRows) => {
-            let totalGastos = 0;
-            let desgloseGastos = [];
-            
-            if (expRows && expRows.length > 0) {
-                expRows.forEach(row => {
-                    totalGastos += row.amount;
-                    desgloseGastos.push(row);
-                });
-            }
-
-            let totalGeneral = 0; let numTickets = orders.length; let ventasPorMesero = {};
-            let totalEfectivo = 0; let totalTarjeta = 0; 
-            let propinasEfectivo = 0; let propinasTarjeta = 0;
-            // === NUEVAS VARIABLES ===
-            let totalLlevar = 0; let totalComedor = 0;
-
-            orders.forEach(o => {
-                totalGeneral += o.total;
-                if (!ventasPorMesero[o.waiter_name]) ventasPorMesero[o.waiter_name] = { total: 0, tickets: 0 };
-                ventasPorMesero[o.waiter_name].total += o.total;
-                ventasPorMesero[o.waiter_name].tickets += 1;
-
-                let propina = o.tip_amount || 0;
-            
-                // 💡 REPARACIÓN: Sumar el dinero de sus alcancías correctas
-                let pagadoEfectivo = o.cash_amount || 0;
-                let pagadoTarjeta = o.card_amount || 0;
-
-                if (pagadoEfectivo === 0 && pagadoTarjeta === 0) {
-                if (o.payment_method === 'EFECTIVO') pagadoEfectivo = o.total;
-                else pagadoTarjeta = o.total;
-                }
-
-                totalEfectivo += pagadoEfectivo;
-                totalTarjeta += pagadoTarjeta;
-
-                if (o.payment_method === 'EFECTIVO') propinasEfectivo += propina;
-                else propinasTarjeta += propina;
-
-                // ✨ EL TOQUE MÁGICO PARA LA TABLA VISUAL:
-                if (pagadoEfectivo > 0 && pagadoTarjeta > 0) {
-                o.payment_method = 'MIXTO';
-                }
-            });
-
-            res.json({ 
-                date: targetDate, 
-                summary: { 
-                    total_general: totalGeneral, total_efectivo: totalEfectivo, total_tarjeta: totalTarjeta,
-                    propinas_efectivo: propinasEfectivo, propinas_tarjeta: propinasTarjeta, 
-                    total_gastos: totalGastos, desglose_gastos: desgloseGastos,
-                    total_llevar: totalLlevar, total_comedor: totalComedor, // ENVIANDO AL FRONTEND
-                    num_tickets: numTickets, ventas_por_mesero: ventasPorMesero 
-                }, 
-                orders: orders 
-            });
+        const { summary, orders } = await calculateCorteData(targetDate);
+        res.json({
+            date: targetDate,
+            summary,
+            orders
         });
-    });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const printCorte = (req, res) => {
-    const targetDate = req.query.date; 
+const printCorte = async (req, res) => {
+    try {
+        const targetDate = req.query.date;
+        if (!targetDate) {
+            return res.status(400).json({ error: 'Fecha requerida para el corte.' });
+        }
 
-    db.get(`SELECT COUNT(*) as open_tables FROM tables WHERE status = 'OCUPADA'`, [], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (row.open_tables > 0) return res.status(400).json({ error: `CORTE BLOQUEADO. Aún tienes ${row.open_tables} mesa(s) abierta(s) o sin cobrar en el piso.` });
-
-        const ordersQuery = `SELECT o.*, t.table_number FROM orders o JOIN tables t ON o.table_id = t.id WHERE o.status = 'PAGADA' AND DATE(o.closed_at) = ?`;
-        db.all(ordersQuery, [targetDate], (err, orders) => {
-            if (err) return res.status(500).json({ error: err.message });
-            
-            db.get(`SELECT SUM(amount) as total_gastos FROM expenses WHERE DATE(created_at) = ?`, [targetDate], (err, expRow) => {
-                let totalGastos = expRow ? (expRow.total_gastos || 0) : 0;
-                let totalGeneral = 0; let numTickets = orders.length; let ventasPorMesero = {};
-                let totalEfectivo = 0; let totalTarjeta = 0; 
-                let propinasEfectivo = 0; let propinasTarjeta = 0;
-                // === NUEVAS VARIABLES ===
-                let totalLlevar = 0; let totalComedor = 0;
-
-                orders.forEach(o => {
-                    totalGeneral += o.total;
-                    if (!ventasPorMesero[o.waiter_name]) ventasPorMesero[o.waiter_name] = { total: 0, tickets: 0 };
-                    ventasPorMesero[o.waiter_name].total += o.total;
-                    ventasPorMesero[o.waiter_name].tickets += 1;
-
-                    let propina = o.tip_amount || 0;
-                    
-                    // 💡 REPARACIÓN: Sumar el dinero de sus alcancías correctas
-                    let pagadoEfectivo = o.cash_amount || 0;
-                    let pagadoTarjeta = o.card_amount || 0;
-
-                    if (pagadoEfectivo === 0 && pagadoTarjeta === 0) {
-                        if (o.payment_method === 'EFECTIVO') pagadoEfectivo = o.total;
-                        else pagadoTarjeta = o.total;
-                    }
-
-                    totalEfectivo += pagadoEfectivo;
-                    totalTarjeta += pagadoTarjeta;
-
-                    if (o.payment_method === 'EFECTIVO') propinasEfectivo += propina;
-                    else propinasTarjeta += propina;
-
-                    // ✨ EL TOQUE MÁGICO PARA LA TABLA VISUAL:
-                    if (pagadoEfectivo > 0 && pagadoTarjeta > 0) {
-                        o.payment_method = 'MIXTO';
-                    }
-                    
-                    // === CLASIFICADOR DE MESAS ===
-                    if (o.table_number && o.table_number.toUpperCase().includes('LLEVAR')) {
-                        totalLlevar += o.total;
-                    } else {
-                        totalComedor += o.total;
-                    }
-                });
-
-                const summary = { 
-                    total_general: totalGeneral, total_efectivo: totalEfectivo, total_tarjeta: totalTarjeta,
-                    propinas_efectivo: propinasEfectivo, propinas_tarjeta: propinasTarjeta, total_gastos: totalGastos,
-                    total_llevar: totalLlevar, total_comedor: totalComedor, // ENVIANDO A LA IMPRESORA
-                    num_tickets: numTickets, ventas_por_mesero: ventasPorMesero 
-                };
-                
-                if (printerService && printerService.printCorteZ) printerService.printCorteZ(targetDate, summary);
-                else console.log(`\n[ 🖨️  CORTE IMPRESO: Ventas $${totalGeneral}, Gastos $${totalGastos} ]\n`);
-                
-                res.json({ message: 'Corte enviado a impresión' });
+        const openTablesRow = await dbGet(`SELECT COUNT(*) as open_tables FROM tables WHERE status = 'OCUPADA'`);
+        const openTables = openTablesRow ? openTablesRow.open_tables : 0;
+        if (openTables > 0) {
+            return res.status(400).json({
+                error: `CORTE BLOQUEADO. Aún tienes ${openTables} mesa(s) abierta(s) o sin cobrar en el piso.`
             });
-        });
-    });
+        }
+
+        const { summary } = await calculateCorteData(targetDate);
+
+        if (printerService && printerService.printCorteZ) {
+            printerService.printCorteZ(targetDate, summary);
+        } else {
+            console.log(`\n[ 🖨️ CORTE IMPRESO: Ventas $${summary.total_general}, Gastos $${summary.total_gastos} ]\n`);
+        }
+
+        res.json({ message: 'Corte enviado a impresión' });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const addExpense = (req, res) => {
-    const { amount, concept, category } = req.body;
-    // 🛑 AQUÍ BLINDAMOS LOS GASTOS A HORA DE MÉXICO TUXTEPEC
-    db.run(`INSERT INTO expenses (amount, concept, category, created_by, created_at) VALUES (?, ?, ?, 'Admin', datetime('now', '-6 hours'))`, [amount, concept, category], function(err) {
-        if (err) return res.status(500).json({ error: err.message });
-        
-        db.run(`INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`, ['GASTO_REGISTRADO', `Retiro de $${amount} para ${concept} (${category})`, 'Admin']);
-        res.json({ message: 'Gasto registrado exitosamente', expenseId: this.lastID });
-    });
+const addExpense = async (req, res) => {
+    try {
+        const { amount, concept, category } = req.body;
+        const numericAmount = Number(amount) || 0;
+
+        if (numericAmount <= 0) {
+            return res.status(400).json({ error: 'El monto del gasto debe ser mayor a cero.' });
+        }
+        if (!concept || !String(concept).trim()) {
+            return res.status(400).json({ error: 'El concepto del gasto es requerido.' });
+        }
+
+        const expenseRes = await dbRun(
+            `INSERT INTO expenses (amount, concept, category, created_by, created_at) 
+             VALUES (?, ?, ?, 'Admin', datetime('now', '-6 hours'))`,
+            [numericAmount, concept, category]
+        );
+
+        await dbRun(
+            `INSERT INTO audit_logs (action, details, performed_by, created_at) 
+             VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
+            ['GASTO_REGISTRADO', `Retiro de $${numericAmount} para ${concept} (${category})`, 'Admin']
+        );
+
+        res.json({ message: 'Gasto registrado exitosamente', expenseId: expenseRes.lastID });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const backupDatabase = (req, res) => {
-    const { pin } = req.body;
-    if (!pin) return res.status(400).json({ error: 'PIN requerido' });
+const deleteExpense = async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { pin } = req.body;
 
-    const hash = crypto.createHash('sha256').update(pin).digest('hex');
-    db.get(`SELECT value FROM settings WHERE key = 'admin_pin'`, [], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!row || row.value !== hash) return res.status(403).json({ error: 'PIN INCORRECTO' });
+        const isPinValid = await verifyAdminPin(pin);
+        if (!isPinValid) {
+            return res.status(403).json({ error: 'PIN INCORRECTO' });
+        }
 
-        const dbPath = path.resolve(__dirname, '../../pos_restaurante.db');
-        const fecha = new Date().toISOString().split('T')[0];
-        
-        res.download(dbPath, `Respaldo_Estampida_${fecha}.db`, (err) => {
-            if (err) console.error('Error al enviar el respaldo:', err);
-        });
-    });
+        const expense = await dbGet(`SELECT * FROM expenses WHERE id = ?`, [id]);
+        if (!expense) {
+            return res.status(404).json({ error: 'Gasto no encontrado' });
+        }
+
+        await dbRun(`DELETE FROM expenses WHERE id = ?`, [id]);
+        await dbRun(
+            `INSERT INTO audit_logs (action, details, performed_by, created_at) 
+             VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
+            ['ELIMINAR_GASTO', `Se anuló el gasto de $${expense.amount} (${expense.concept})`, 'Admin']
+        );
+
+        res.json({ message: 'Gasto cancelado exitosamente' });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const getFondo = (req, res) => {
-    const targetDate = req.query.date;
-    db.get(`SELECT value FROM settings WHERE key = ?`, [`fondo_${targetDate}`], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
+const getFondo = async (req, res) => {
+    try {
+        const targetDate = req.query.date;
+        const row = await dbGet(`SELECT value FROM settings WHERE key = ?`, [`fondo_${targetDate}`]);
         res.json({ fondo: row ? parseFloat(row.value) : 0 });
-    });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const setFondo = (req, res) => {
-    const { pin, date, amount } = req.body; 
-    const targetDate = date;
-    const hash = crypto.createHash('sha256').update(pin || '').digest('hex');
-    db.get(`SELECT value FROM settings WHERE key = 'admin_pin'`, [], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!row || row.value !== hash) return res.status(403).json({ error: 'PIN INCORRECTO' });
-        db.run(`INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`, [`fondo_${targetDate}`, amount], (err) => {
-            if (err) return res.status(500).json({ error: err.message });
-            res.json({ message: 'Fondo guardado exitosamente' });
+const setFondo = async (req, res) => {
+    try {
+        const { pin, date, amount } = req.body;
+        const targetDate = date;
+
+        const isPinValid = await verifyAdminPin(pin);
+        if (!isPinValid) {
+            return res.status(403).json({ error: 'PIN INCORRECTO' });
+        }
+
+        await dbRun(
+            `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`,
+            [`fondo_${targetDate}`, amount]
+        );
+
+        res.json({ message: 'Fondo guardado exitosamente' });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const backupDatabase = async (req, res) => {
+    try {
+        const { pin } = req.body;
+        if (!pin) return res.status(400).json({ error: 'PIN requerido' });
+
+        const isPinValid = await verifyAdminPin(pin);
+        if (!isPinValid) {
+            return res.status(403).json({ error: 'PIN INCORRECTO' });
+        }
+
+        // En modo WAL, forzamos un checkpoint completo para que el archivo .db contenga
+        // todas las transacciones recientes antes de descargarlo.
+        try {
+            await dbExec('PRAGMA wal_checkpoint(TRUNCATE)');
+        } catch (checkpointErr) {
+            console.warn('Aviso: wal_checkpoint TRUNCATE no completó:', checkpointErr.message);
+        }
+
+        const { DB_PATH: dbPath } = require('../config/paths');
+        const fecha = new Date().toISOString().split('T')[0];
+
+        res.download(dbPath, `Respaldo_Estampida_${fecha}.db`, (err) => {
+            if (err && !res.headersSent) {
+                console.error('Error al enviar el respaldo:', err);
+                res.status(500).json({ error: 'Error al generar la descarga' });
+            }
         });
-    });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-const deleteExpense = (req, res) => {
-    const { id } = req.params;
-    const { pin } = req.body;
-    const hash = crypto.createHash('sha256').update(pin || '').digest('hex');
-    
-    db.get(`SELECT value FROM settings WHERE key = 'admin_pin'`, [], (err, row) => {
-        if (err) return res.status(500).json({ error: err.message });
-        if (!row || row.value !== hash) return res.status(403).json({ error: 'PIN INCORRECTO' });
-        
-        db.get(`SELECT * FROM expenses WHERE id = ?`, [id], (err, expense) => {
-            if (!expense) return res.status(404).json({error: 'Gasto no encontrado'});
-            
-            db.run(`DELETE FROM expenses WHERE id = ?`, [id], function(err) {
-                if(err) return res.status(500).json({error: err.message});
-                
-                db.run(`INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`, 
-                    ['ELIMINAR_GASTO', `Se anuló el gasto de $${expense.amount} (${expense.concept})`, 'Admin']);
-                res.json({message: 'Gasto cancelado exitosamente'});
-            });
-        });
-    });
+const getAuditLogs = async (req, res) => {
+    try {
+        const targetDate = req.query.date;
+        if (!targetDate) {
+            return res.status(400).json({ error: 'Se requiere una fecha para la auditoría.' });
+        }
+
+        const rows = await dbAll(
+            `SELECT * FROM audit_logs WHERE DATE(created_at) = ? ORDER BY id DESC`,
+            [targetDate]
+        );
+
+        res.json({ logs: rows });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
 };
 
-module.exports = { getCorte, printCorte, backupDatabase, getFondo, setFondo, addExpense, deleteExpense };
+module.exports = {
+    getCorte,
+    printCorte,
+    backupDatabase,
+    getFondo,
+    setFondo,
+    addExpense,
+    deleteExpense,
+    getAuditLogs
+};

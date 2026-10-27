@@ -1,7 +1,7 @@
 const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 
-const dbPath = path.resolve(__dirname, './pos_restaurante.db');
+const { DB_PATH: dbPath } = require('./paths');
 const db = new sqlite3.Database(dbPath);
 
 db.serialize(() => {

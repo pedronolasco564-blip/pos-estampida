@@ -10,8 +10,16 @@ function obtenerFechaLocal() {
     return `${anio}-${mes}-${dia}`;
 }
 
+// 🛡️ Sanitizador anti-XSS: escapa caracteres HTML peligrosos antes de inyectar en innerHTML
+function escapeHtml(text) {
+    if (text === null || text === undefined) return '';
+    const str = String(text);
+    const map = { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' };
+    return str.replace(/[&<>"']/g, (c) => map[c]);
+}
+
 let modalCloseTimeout; 
-function showCustomModal({ type = 'info', title = 'Atención', text = '', showInput = false, inputType = 'text', inputValue = '', showCancel = false }) {
+function showCustomModal({ type = 'info', title = 'Atención', text = '', showInput = false, inputType = 'text', inputValue = '', showCancel = false, choices = null, currentChoice = '' }) {
     return new Promise((resolve) => {
         clearTimeout(modalCloseTimeout); 
         const overlay = document.getElementById('custom-alert-overlay'); const box = document.getElementById('custom-alert-box'); const icon = document.getElementById('custom-alert-icon'); const titleEl = document.getElementById('custom-alert-title'); const textEl = document.getElementById('custom-alert-text'); const inputEl = document.getElementById('custom-alert-input'); const btnOk = document.getElementById('custom-alert-ok'); const btnCancel = document.getElementById('custom-alert-cancel');
@@ -21,15 +29,62 @@ function showCustomModal({ type = 'info', title = 'Atención', text = '', showIn
         btnCancel.style.display = showCancel ? 'block' : 'none'; overlay.style.display = 'flex';
         setTimeout(() => { overlay.style.opacity = '1'; box.style.transform = 'scale(1)'; }, 10);
         const closeModal = (result) => { overlay.style.opacity = '0'; box.style.transform = 'scale(0.9)'; modalCloseTimeout = setTimeout(() => { overlay.style.display = 'none'; }, 200); btnOk.onclick = null; btnCancel.onclick = null; inputEl.onkeypress = null; resolve(result); };
-        btnOk.onclick = () => closeModal(showInput ? inputEl.value : true); btnCancel.onclick = () => closeModal(showInput ? null : false);
+        btnOk.onclick = () => closeModal(showInput ? inputEl.value : true); btnCancel.onclick = () => { const l = document.getElementById('custom-alert-choices'); if (l) l.remove(); closeModal(showInput || choices ? null : false); };
         if (showInput) { inputEl.onkeypress = (e) => { if (e.key === 'Enter') btnOk.click(); }; }
+        // Lista de opciones: se elige tocando un botón (sin escribir), el resultado es el texto elegido.
+        btnOk.style.display = choices ? 'none' : '';
+        const oldList = document.getElementById('custom-alert-choices'); if (oldList) oldList.remove();
+        if (choices) {
+            const list = document.createElement('div');
+            list.id = 'custom-alert-choices';
+            list.style.cssText = 'display:flex; flex-direction:column; gap:8px; margin-bottom:16px; max-height:45vh; overflow-y:auto;';
+            choices.forEach((name) => {
+                const b = document.createElement('button');
+                b.type = 'button';
+                b.textContent = name === currentChoice ? `✓ ${name}` : name;
+                b.className = name === currentChoice ? 'btn-primary' : 'btn-secondary';
+                b.style.cssText = 'padding:14px; font-size:15px; font-weight:700; width:100%;';
+                b.onclick = () => { list.remove(); closeModal(name); };
+                list.appendChild(b);
+            });
+            textEl.insertAdjacentElement('afterend', list);
+        }
     });
 }
 const customAlert = (text, type = 'info', title = 'Atención') => showCustomModal({ type, title, text });
+const customSelect = (text, choices, currentChoice = '', title = 'Seleccionar') => showCustomModal({ type: 'info', title, text, showCancel: true, choices, currentChoice });
 const customConfirm = (text, title = 'Confirmar') => showCustomModal({ type: 'warning', title, text, showCancel: true });
 const customPrompt = (text, inputType = 'text', inputValue = '', title = 'Entrada requerida') => showCustomModal({ type: 'info', title, text, showInput: true, inputType, inputValue, showCancel: true });
 
-let isAdminSessionActive = localStorage.getItem('isAdminSessionActive') === 'true';
+// ========================================================
+// SESIÓN DE ADMINISTRADOR (el servidor es quien decide; esto solo guarda el token)
+// ========================================================
+const ADMIN_TOKEN_KEY = 'pos_admin_token';
+const getAdminToken = () => { try { return localStorage.getItem(ADMIN_TOKEN_KEY) || ''; } catch (_) { return ''; } };
+const setAdminToken = (t) => { try { t ? localStorage.setItem(ADMIN_TOKEN_KEY, t) : localStorage.removeItem(ADMIN_TOKEN_KEY); } catch (_) {} };
+
+// Toda petición a /api lleva el token automáticamente; si el servidor lo rechaza, se cierra el panel.
+const nativeFetch = window.fetch.bind(window);
+window.fetch = async (input, init = {}) => {
+    const url = typeof input === 'string' ? input : (input && input.url) || '';
+    const isApi = url.startsWith('/api/');
+    const token = getAdminToken();
+    if (isApi && token) init = { ...init, headers: { ...(init.headers || {}), Authorization: `Bearer ${token}` } };
+    const res = await nativeFetch(input, init);
+    if (isApi && res.status === 401 && isAdminSessionActive) handleAdminExpired();
+    return res;
+};
+
+function handleAdminExpired() {
+    isAdminSessionActive = false; setAdminToken(''); localStorage.setItem('isAdminSessionActive', 'false');
+    if (btnMasterAdmin) { btnMasterAdmin.innerHTML = '👑 Panel de Administrador'; btnMasterAdmin.style.backgroundColor = '#1a1a1a'; }
+    setView('welcome-view');
+    customAlert('La sesión de administrador expiró. Vuelve a ingresar tu PIN.', 'warning', 'Sesión cerrada');
+}
+
+let isAdminSessionActive = localStorage.getItem('isAdminSessionActive') === 'true' && !!getAdminToken();
+// Al recargar, confirma con el servidor que la sesión sigue vigente (un 401 cierra el panel).
+if (isAdminSessionActive) fetch('/api/catalog/session').catch(() => {});
 let currentViewId = localStorage.getItem('currentViewId') || 'welcome-view';
 
 const welcomeView = document.getElementById('welcome-view');
@@ -85,29 +140,219 @@ const btnSendPrint = document.getElementById('btn-send-print'); const btnSendSav
 const btnPayOrder = document.getElementById('btn-pay-order'); const btnCancelOrder = document.getElementById('btn-cancel-order'); const btnDeselectTable = document.getElementById('btn-deselect-table'); const btnTransferTable = document.getElementById('btn-transfer-table'); 
 const paymentPanel = document.getElementById('payment-panel'); const inputAmountPaid = document.getElementById('amount-paid'); const waiterSelect = document.getElementById('waiter-select');
 const noteModal = document.getElementById('note-modal'); const modalNoteInput = document.getElementById('modal-note-input'); const noteModalTitle = document.getElementById('note-modal-title'); const quickModifiersGrid = document.getElementById('quick-modifiers-grid');
+
+// ========================================================
+// BORRADOR DE ORDEN: lo que se va tomando se guarda en el servidor por mesa,
+// así no se pierde al cambiar de mesa y lo ven todos los dispositivos.
+// ========================================================
+const DEVICE_ID = (() => {
+    try {
+        let id = localStorage.getItem('pos_device_id');
+        if (!id) { id = Math.random().toString(36).slice(2) + Date.now().toString(36); localStorage.setItem('pos_device_id', id); }
+        return id;
+    } catch (_) { return Math.random().toString(36).slice(2); }
+})();
+let draftTableId = null;       // mesa cuyo borrador ya se cargó (solo entonces se guardan cambios)
+let draftSynced = '[]';        // último contenido enviado al servidor
+let draftQueue = Promise.resolve();
+let draftPending = 0;
+
+const serializeDraft = (items) => JSON.stringify(items.map(i => ({ product_id: i.product_id, name: i.name, price: i.price, quantity: i.quantity, notes: i.notes || '', is_takeaway: !!i.is_takeaway, station: i.station, extra_price: i.extra_price || 0 })));
+
+// Se llama en cada redibujo de la comanda: si cambió algo, lo manda (en orden) al servidor.
+function syncDraft() {
+    if (!currentTableId || draftTableId !== currentTableId) return;
+    const snapshot = serializeDraft(newOrderItems);
+    if (snapshot === draftSynced) return;
+    draftSynced = snapshot;
+    const tableId = currentTableId;
+    const waiter = waiterSelect ? waiterSelect.value : '';
+    draftPending++;
+    draftQueue = draftQueue.then(async () => {
+        try {
+            const res = await fetch(`/api/orders/drafts/${tableId}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: JSON.parse(snapshot), waiter_name: waiter, device_id: DEVICE_ID }) });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        } catch (err) {
+            console.error('No se pudo guardar el borrador:', err);
+            if (draftTableId === tableId && draftSynced === snapshot) draftSynced = null; // se reintenta en el próximo cambio
+        } finally { draftPending--; }
+    });
+}
+
+async function loadDraft(tableId) {
+    await draftQueue; // primero que lleguen los cambios que este dispositivo ya mandó
+    try {
+        const res = await fetch(`/api/orders/drafts/${tableId}`);
+        const data = await res.json();
+        if (currentTableId !== tableId) return; // se cambió de mesa mientras cargaba
+        newOrderItems = data.items || [];
+        draftSynced = serializeDraft(newOrderItems);
+        draftTableId = tableId;
+    } catch (err) {
+        console.error('No se pudo cargar el borrador:', err); // sin conexión: se trabaja local, sin pisar el del servidor
+    }
+}
 let editingItemIndex = null; 
+let tempExtraPrice = 0; 
 
 const statusBar = document.getElementById('status-bar');
 function updateNetworkStatus() { if (navigator.onLine) { statusBar.innerHTML = '🟢 Conectado'; statusBar.style.color = '#2ecc71'; statusBar.style.fontWeight = 'bold'; } else { statusBar.innerHTML = '🔴 Sin Red'; statusBar.style.color = '#e74c3c'; statusBar.style.fontWeight = 'bold'; } }
 window.addEventListener('online', updateNetworkStatus); window.addEventListener('offline', updateNetworkStatus);
 
+// ========================================================
+// FASE 2: ERGONOMÍA MÓVIL Y PERSISTENCIA DE MESERO
+// ========================================================
+function triggerHaptic(duration = 35) {
+    try {
+        if ('vibrate' in navigator) {
+            navigator.vibrate(duration);
+        }
+    } catch (_) {}
+}
+
+function getDeviceWaiter() {
+    return localStorage.getItem('pos_waiter_device') || '';
+}
+
+function setDeviceWaiter(name) {
+    const trimmed = (name || '').trim();
+    if (trimmed) {
+        localStorage.setItem('pos_waiter_device', trimmed);
+        lastSelectedWaiter = trimmed;
+    } else {
+        localStorage.removeItem('pos_waiter_device');
+        lastSelectedWaiter = '';
+    }
+    updateDeviceWaiterBadge();
+    if (waiterSelect && !waiterSelect.disabled) {
+        waiterSelect.value = trimmed;
+    }
+}
+
+function updateDeviceWaiterBadge() {
+    const badgeName = document.getElementById('header-waiter-name');
+    if (badgeName) {
+        const waiter = getDeviceWaiter();
+        badgeName.textContent = waiter || 'Asignar Mesero';
+    }
+}
+
+const SIN_ASIGNAR = 'Sin asignar';
+window.changeDeviceWaiter = async function() {
+    triggerHaptic(25);
+    try {
+        const res = await fetch('/api/catalog/waiters');
+        const data = await res.json();
+        const waiters = (data.waiters || []).map(w => w.name);
+        if (waiters.length === 0) {
+            await customAlert('No hay meseros registrados en el sistema.', 'warning');
+            return;
+        }
+        const selected = await customSelect(
+            'Toca el mesero asignado a este dispositivo:',
+            [...waiters, SIN_ASIGNAR],
+            getDeviceWaiter(),
+            'Asignar Mesero a este Celular'
+        );
+        if (selected !== null) {
+            if (selected === SIN_ASIGNAR) {
+                setDeviceWaiter('');
+            } else {
+                setDeviceWaiter(selected);
+                await customAlert(`Dispositivo asignado a: ${escapeHtml(selected)}`, 'success');
+            }
+            loadTables();
+        }
+    } catch (err) {
+        console.error('Error al cambiar mesero:', err);
+    }
+};
+
+window.openMobileSheet = function() {
+    triggerHaptic(30);
+    const sheet = document.getElementById('order-section');
+    const backdrop = document.getElementById('mobile-sheet-backdrop');
+    if (sheet) sheet.classList.add('sheet-open');
+    if (backdrop) backdrop.classList.add('active');
+};
+
+window.closeMobileSheet = function() {
+    const sheet = document.getElementById('order-section');
+    const backdrop = document.getElementById('mobile-sheet-backdrop');
+    if (sheet) sheet.classList.remove('sheet-open');
+    if (backdrop) backdrop.classList.remove('active');
+};
+
+window.addQuickTerm = function(term) {
+    triggerHaptic(25);
+    const input = document.getElementById('modal-note-input');
+    if (!input) return;
+    const currentVal = input.value.trim();
+    if (currentVal) {
+        if (!currentVal.toLowerCase().includes(term.toLowerCase())) {
+            input.value = `${currentVal}, ${term}`;
+        }
+    } else {
+        input.value = term;
+    }
+};
+
+let filterOnlyMyTables = false;
+
+window.toggleMyTablesFilter = function() {
+    triggerHaptic(30);
+    filterOnlyMyTables = !filterOnlyMyTables;
+    const btn = document.getElementById('btn-toggle-my-tables');
+    const indicator = document.getElementById('my-tables-indicator');
+    if (btn && indicator) {
+        if (filterOnlyMyTables) {
+            btn.style.background = '#d35400';
+            btn.style.color = '#fff';
+            btn.style.borderColor = '#e67e22';
+            indicator.textContent = '🟢';
+        } else {
+            btn.style.background = '#252525';
+            btn.style.color = '#bdc3c7';
+            btn.style.borderColor = '#444';
+            indicator.textContent = '⚪';
+        }
+    }
+    loadTables();
+};
+
 const btnMasterAdmin = document.getElementById('btn-master-admin');
 
 document.addEventListener('DOMContentLoaded', () => {
     updateNetworkStatus(); 
+    updateDeviceWaiterBadge();
     loadTables(); loadCategories(); loadProducts(); loadWaiters(); loadModifiers();
-    if (waiterSelect) waiterSelect.addEventListener('change', (e) => lastSelectedWaiter = e.target.value);
+    if (waiterSelect) {
+        waiterSelect.addEventListener('change', (e) => {
+            lastSelectedWaiter = e.target.value;
+            if (e.target.value) {
+                setDeviceWaiter(e.target.value);
+            }
+        });
+    }
     if (btnDeselectTable) {
         btnDeselectTable.onclick = async () => {
-            if (newOrderItems.length > 0) {
-                if (!(await customConfirm('Tienes platillos sin enviar a cocina. ¿Seguro que quieres salir y descartarlos?', '¡Atención!'))) return;
-            }
+            // Los platillos sin enviar quedan guardados en la mesa
             clearTableSelection();
         };
     }
-    document.getElementById('btn-save-note').onclick = () => { if (editingItemIndex !== null) { newOrderItems[editingItemIndex].notes = modalNoteInput.value.trim(); updateOrderUI(); } noteModal.style.display = 'none'; };
-    document.getElementById('btn-cancel-note').onclick = () => noteModal.style.display = 'none';
-    document.getElementById('btn-clear-note').onclick = () => { modalNoteInput.value = ''; if (editingItemIndex !== null) { newOrderItems[editingItemIndex].extra_price = 0; newOrderItems[editingItemIndex].notes = ''; } };
+    document.getElementById('btn-save-note').onclick = () => { 
+        if (editingItemIndex !== null) { 
+            newOrderItems[editingItemIndex].notes = modalNoteInput.value.trim(); 
+            newOrderItems[editingItemIndex].extra_price = tempExtraPrice;
+            updateOrderUI(); 
+        } 
+        noteModal.style.display = 'none'; 
+    };
+    document.getElementById('btn-cancel-note').onclick = () => { noteModal.style.display = 'none'; };
+    document.getElementById('btn-clear-note').onclick = () => { 
+        modalNoteInput.value = ''; 
+        tempExtraPrice = 0;
+    };
 
     if (isAdminSessionActive && btnMasterAdmin) { btnMasterAdmin.innerHTML = '👑 Volver al Panel (Desbloqueado)'; btnMasterAdmin.style.backgroundColor = '#d35400'; }
     setView(currentViewId);
@@ -122,10 +367,8 @@ window.enterAsWaiter = function() { setView('pos-view'); loadTables(); };
 window.enterAsAdmin = function() { loginPinInput.value = ''; loginErrorMsg.style.display = 'none'; loginModal.style.display = 'flex'; setTimeout(() => loginPinInput.focus(), 100); };
 if(btnMasterAdmin) { 
         btnMasterAdmin.onclick = async () => { 
-            if (newOrderItems.length > 0) {
-                if (!(await customConfirm('Tienes platillos sin enviar a cocina. ¿Seguro que quieres descartarlos para ir al Panel?', '¡Atención!'))) return;
-                clearTableSelection();
-            }
+            // Los platillos sin enviar quedan guardados en la mesa
+            if (newOrderItems.length > 0) clearTableSelection();
             if (isAdminSessionActive) { 
                 setView('admin-hub-view'); 
             } else { 
@@ -140,6 +383,8 @@ document.getElementById('btn-login-submit').onclick = async () => {
     try {
         const response = await fetch('/api/catalog/verify-pin', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ pin }) });
         if (response.ok) { 
+            const loginData = await response.json();
+            setAdminToken(loginData.token);
             loginModal.style.display = 'none'; 
             isAdminSessionActive = true; localStorage.setItem('isAdminSessionActive', 'true');
             btnMasterAdmin.innerHTML = '👑 Volver al Panel (Desbloqueado)'; btnMasterAdmin.style.backgroundColor = '#d35400'; 
@@ -151,6 +396,8 @@ loginPinInput.addEventListener('keypress', function (e) { if (e.key === 'Enter')
 
 document.getElementById('btn-exit-admin').onclick = async () => {
     if (!(await customConfirm('¿Deseas bloquear el panel y cerrar tu sesión?', 'Seguridad'))) return;
+    try { await fetch('/api/catalog/logout', { method: 'POST' }); } catch (_) {}
+    setAdminToken('');
     isAdminSessionActive = false; localStorage.setItem('isAdminSessionActive', 'false');
     btnMasterAdmin.innerHTML = '👑 Panel de Administrador'; btnMasterAdmin.style.backgroundColor = '#1a1a1a'; 
     setView('welcome-view'); clearTableSelection(); loadTables(); await customAlert('Sesión cerrada. El sistema está protegido.', 'success');
@@ -168,8 +415,9 @@ document.getElementById('btn-close-admin').onclick = () => { setView('admin-hub-
 document.getElementById('btn-close-audit').onclick = () => { setView('admin-hub-view'); };
 
 function clearTableSelection() {
-    currentTableId = null; currentOrderId = null; currentTableSpan.textContent = 'Ninguna'; btnDeselectTable.style.display = 'none'; btnTransferTable.style.display = 'none'; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; waiterSelect.disabled = false; waiterSelect.style.backgroundColor = '#2a2a2a'; waiterSelect.style.color = '#fff'; if(waiterSelect.previousElementSibling) waiterSelect.previousElementSibling.innerHTML = 'Mesero en Turno:'; updateOrderUI();
+    draftTableId = null; currentTableId = null; currentOrderId = null; currentTableSpan.textContent = 'Ninguna'; btnDeselectTable.style.display = 'none'; btnTransferTable.style.display = 'none'; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; waiterSelect.disabled = false; waiterSelect.style.backgroundColor = '#2a2a2a'; waiterSelect.style.color = '#fff'; if(waiterSelect.previousElementSibling) waiterSelect.previousElementSibling.innerHTML = 'Mesero en Turno:'; updateOrderUI();
     document.querySelectorAll('.btn-table').forEach(b => b.classList.remove('selected'));
+    closeMobileSheet();
 }
 
 async function loadFullAuditLogs() {
@@ -212,12 +460,12 @@ async function loadCategories() {
         if (tabsContainer) { 
             tabsContainer.innerHTML = `<button class="btn-category" onclick="filterCategory('TOP', this)" style="border-color: #e74c3c; color: #e74c3c;">⭐ </button>`;
             tabsContainer.innerHTML += `<button class="btn-category active" onclick="filterCategory('ALL', this)">Todo</button>`; 
-            data.categories.forEach(cat => tabsContainer.innerHTML += `<button class="btn-category" onclick="filterCategory('${cat.name}', this)">${cat.name}</button>`); 
+            data.categories.forEach(cat => tabsContainer.innerHTML += `<button class="btn-category" onclick="filterCategory('${escapeHtml(cat.name)}', this)">${escapeHtml(cat.name)}</button>`); 
         } 
         const selectCategory = document.getElementById('new-category'); 
         if (selectCategory) { 
             selectCategory.innerHTML = `<option value="">Selecciona Categoría</option>`; 
-            data.categories.forEach(cat => selectCategory.innerHTML += `<option value="${cat.name}">${cat.name}</option>`); 
+            data.categories.forEach(cat => selectCategory.innerHTML += `<option value="${escapeHtml(cat.name)}">${escapeHtml(cat.name)}</option>`); 
         } 
     } catch (error) { console.error('Error:', error); } 
 }
@@ -240,10 +488,10 @@ function displayProducts(productsToDisplay) {
             btn.style.color = '#7f8c8d'; 
             btn.style.cursor = 'not-allowed';
             btn.style.boxShadow = 'inset 0 4px 0 rgba(34, 34, 34, 0.8)'; /* Borde gris apagado */
-            btn.innerHTML = `<span style="text-decoration: line-through;">${product.name}</span><br><span style="color: #e74c3c; font-weight: bold; font-size: 11px;">🚫 AGOTADO</span>`;
+            btn.innerHTML = `<span style="text-decoration: line-through;">${escapeHtml(product.name)}</span><br><span style="color: #e74c3c; font-weight: bold; font-size: 11px;">🚫 AGOTADO</span>`;
             btn.onclick = () => customAlert('Este platillo está marcado como AGOTADO.', 'warning');
         } else {
-            btn.textContent = `${product.name} - $${product.price}`; 
+            btn.textContent = `${escapeHtml(product.name)} - $${product.price}`; 
             btn.onclick = () => addToOrder(product); 
         }
         menuGrid.appendChild(btn); 
@@ -283,12 +531,11 @@ async function loadTables() {
         const data = await response.json(); 
         
         tablesGrid.innerHTML = `
-            <div style="display: flex; gap: 5px; margin-bottom: 12px; background: #1a1a1a; padding: 4px; border-radius: 8px; border: 1px solid #333;">
-                <button onclick="switchTableTab('COMEDOR')" style="flex: 1; padding: 8px 4px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; background: ${currentTableTab === 'COMEDOR' ? '#d35400' : 'transparent'}; color: ${currentTableTab === 'COMEDOR' ? '#fff' : '#7f8c8d'}; transition: background 0.2s; font-size: 11px;">🍽️ COMEDOR</button>
-                <button onclick="switchTableTab('LLEVAR')" style="flex: 1; padding: 8px 4px; border: none; border-radius: 6px; font-weight: bold; cursor: pointer; background: ${currentTableTab === 'LLEVAR' ? '#9b59b6' : 'transparent'}; color: ${currentTableTab === 'LLEVAR' ? '#fff' : '#7f8c8d'}; transition: background 0.2s; font-size: 11px;">🛍️ LLEVAR</button>
+            <div class="table-tabs-container">
+                <button onclick="switchTableTab('COMEDOR')" class="table-tab-btn ${currentTableTab === 'COMEDOR' ? 'active' : ''}">🍽️ COMEDOR</button>
+                <button onclick="switchTableTab('LLEVAR')" class="table-tab-btn ${currentTableTab === 'LLEVAR' ? 'active-llevar' : ''}">🛍️ LLEVAR</button>
             </div>
             
-            <!-- Contenedores con Flex-direction: column para forzar UNA sola hilera hacia abajo -->
             <div id="grid-comedor" style="display: ${currentTableTab === 'COMEDOR' ? 'flex' : 'none'}; flex-direction: column; gap: 10px; width: 100%;"></div>
             <div id="grid-llevar" style="display: ${currentTableTab === 'LLEVAR' ? 'flex' : 'none'}; flex-direction: column; gap: 10px; width: 100%;"></div>
         `;
@@ -296,7 +543,18 @@ async function loadTables() {
         const gridComedor = document.getElementById('grid-comedor');
         const gridLlevar = document.getElementById('grid-llevar');
 
-        data.tables.forEach(table => {
+        let tablesList = data.tables || [];
+        if (filterOnlyMyTables) {
+            const currentMyWaiter = (getDeviceWaiter() || '').toLowerCase().trim();
+            if (currentMyWaiter) {
+                tablesList = tablesList.filter(t => {
+                    if (t.status === 'LIBRE') return true;
+                    return t.waiter_name && t.waiter_name.toLowerCase().trim() === currentMyWaiter;
+                });
+            }
+        }
+
+        tablesList.forEach(table => {
             const esLlevar = table.table_number.toUpperCase().includes('LLEVAR');
             const btn = document.createElement('button'); 
             btn.className = `btn-table ${table.status === 'OCUPADA' ? 'ocupada' : ''}`;
@@ -320,45 +578,93 @@ async function loadTables() {
             if (table.remaining_balance !== null && table.remaining_balance !== undefined) { displayTotal = table.remaining_balance; }
             
             // CREACIÓN DE TIPOGRAFÍA DE ALTO CONTRASTE
-            const textoMesa = `<span style="font-weight:300; font-size: 11px; letter-spacing: 2px; color: #7f8c8d;">MESA</span><br><span style="font-weight:900; font-size: 24px; line-height: 1.1; color: #fff;">${table.table_number}</span>`;
+            const textoMesa = `<span style="font-weight:300; font-size: 11px; letter-spacing: 2px; color: #7f8c8d;">MESA</span><br><span style="font-weight:900; font-size: 24px; line-height: 1.1; color: #fff;">${escapeHtml(table.table_number)}</span>`;
+
+            const draftBadge = table.has_draft
+                ? `<div style="background: #f39c12; color: #1a1a1a; font-size: 10px; font-weight: 800; padding: 2px 6px; border-radius: 4px; margin-top: 4px; max-width: 95%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">📝 SIN ENVIAR${table.status !== 'OCUPADA' && table.draft_waiter ? ' · ' + escapeHtml(table.draft_waiter) : ''}</div>`
+                : '';
 
             if (table.status === 'OCUPADA') {
-                let mins = table.minutes_open || 0; 
-                let bgColor = 'rgba(0,0,0,0.5)'; if (mins > 40) bgColor = '#900C3F'; else if (mins > 25) bgColor = '#d35400';
+                const mins = table.minutes_open || 0; 
+                let timeClass = 'time-green';
+                let timeIcon = '🟢';
+                if (mins > 45) {
+                    timeClass = 'time-red';
+                    timeIcon = '🔴';
+                } else if (mins > 20) {
+                    timeClass = 'time-orange';
+                    timeIcon = '🟡';
+                }
                 
-                // ✨ NUEVO: Etiqueta dinámica de Folio (solo aparece si el backend lo manda)
+                // Etiqueta dinámica de Folio (solo aparece si el backend lo manda)
                 const etiquetaFolio = table.active_folio 
                     ? `<div style="background: #e74c3c; color: #fff; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin: 4px 0 0 0;">Folio: #${table.active_folio}</div>` 
                     : '';
 
+                const badgeSemaforo = `<div class="badge-time ${timeClass}"><span>${timeIcon}</span> <span>${mins}m</span></div>`;
+
+                const waiterBadge = table.waiter_name 
+                    ? `<div style="font-size: 10px; color: #3498db; font-weight: bold; margin-top: 3px; max-width: 95%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">👤 ${escapeHtml(table.waiter_name)}</div>` 
+                    : '';
+
                 if (displayTotal > 0) { 
-                    btn.innerHTML = `${textoMesa}${etiquetaFolio}<div style="font-size: 10px; background: ${bgColor}; padding: 2px 6px; border-radius: 8px; margin: 4px 0 6px 0; color: white;">⏱️ ${mins} min</div><span style="font-size: 14px; color: #f1c40f; font-weight: 900;">$${displayTotal.toFixed(2)}</span>`; 
+                    btn.innerHTML = `${textoMesa}${etiquetaFolio}${badgeSemaforo}${waiterBadge}${draftBadge}<span style="font-size: 14px; color: #f1c40f; font-weight: 900; margin-top: 2px;">$${displayTotal.toFixed(2)}</span>`; 
                 } else { 
-                    btn.innerHTML = `${textoMesa}${etiquetaFolio}<div style="font-size: 10px; background: ${bgColor}; padding: 2px 6px; border-radius: 8px; margin: 4px 0 6px 0; color: white;">⏱️ ${mins} min</div>`; 
+                    btn.innerHTML = `${textoMesa}${etiquetaFolio}${badgeSemaforo}${waiterBadge}${draftBadge}`; 
                 }
             } else { 
-                btn.innerHTML = `${textoMesa}`; 
+                btn.innerHTML = `${textoMesa}${draftBadge}`; 
             }
-            // Agrega esta línea nueva:
             btn.dataset.id = table.id;
-            
-            // Esta línea ya la tienes:
             btn.onclick = () => selectTable(table);
-            
-            btn.onclick = () => selectTable(table); 
             if (esLlevar) { gridLlevar.appendChild(btn); } else { gridComedor.appendChild(btn); }
         });
 
         const adminTablesList = document.getElementById('admin-tables-list'); 
         if (adminTablesList) { 
             adminTablesList.innerHTML = ''; 
-            data.tables.forEach(table => adminTablesList.innerHTML += `<span style="background: #2c2c2c; padding: 6px 12px; border-radius: 4px; border: 1px solid #444; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: bold;">🪑 ${table.table_number} <button onclick="deleteTable(${table.id})" style="background: #e74c3c; color: white; border: none; border-radius: 3px; padding: 2px 6px; cursor: pointer;">✕</button></span>`); 
+            data.tables.forEach(table => adminTablesList.innerHTML += `<span style="background: #2c2c2c; padding: 6px 12px; border-radius: 4px; border: 1px solid #444; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: bold;">🪑 ${escapeHtml(table.table_number)} <button onclick="deleteTable(${table.id})" style="background: #e74c3c; color: white; border: none; border-radius: 3px; padding: 2px 6px; cursor: pointer;">✕</button></span>`); 
         }
     } catch (error) { console.error('Error:', error); }
 }
 
-async function deleteTable(id) { if (!(await customConfirm('¿Estás seguro de eliminar esta mesa?', 'Eliminar Mesa'))) return; const response = await fetch(`/api/catalog/tables/${id}`, { method: 'DELETE' }); if (response.ok) loadTables(); else { const err = await response.json(); await customAlert(`Error: ${err.error}`, 'error'); } }
-async function loadWaiters() { try { const response = await fetch('/api/catalog/waiters'); const data = await response.json(); if (waiterSelect) { waiterSelect.innerHTML = `<option value="">Seleccione mesero...</option>`; data.waiters.forEach(w => waiterSelect.innerHTML += `<option value="${w.name}">${w.name}</option>`); if (lastSelectedWaiter) waiterSelect.value = lastSelectedWaiter; } const adminWaitersList = document.getElementById('admin-waiters-list'); if (adminWaitersList) { adminWaitersList.innerHTML = ''; data.waiters.forEach(w => adminWaitersList.innerHTML += `<span style="background: #2c2c2c; padding: 6px 12px; border-radius: 4px; border: 1px solid #444; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: bold;">👤 ${w.name} <button onclick="deleteWaiter(${w.id})" style="background: #e74c3c; color: white; border: none; border-radius: 3px; padding: 2px 6px; cursor: pointer;">✕</button></span>`); } } catch (error) { console.error('Error:', error); } }
+window.deleteTable = async function(id) { 
+    if (!(await customConfirm('¿Estás seguro de eliminar esta mesa?', 'Eliminar Mesa'))) return; 
+    try {
+        const response = await fetch(`/api/catalog/tables/${id}`, { method: 'DELETE' }); 
+        if (response.ok) {
+            loadTables(); 
+        } else { 
+            const err = await response.json().catch(() => ({})); 
+            await customAlert(`Error: ${err.error || 'No se pudo eliminar la mesa'}`, 'error'); 
+        } 
+    } catch(e) {
+        await customAlert('Error de red al eliminar mesa', 'error');
+    }
+};
+async function loadWaiters() { 
+    try { 
+        const response = await fetch('/api/catalog/waiters'); 
+        const data = await response.json(); 
+        if (waiterSelect) { 
+            waiterSelect.innerHTML = `<option value="">Seleccione mesero...</option>`; 
+            data.waiters.forEach(w => waiterSelect.innerHTML += `<option value="${escapeHtml(w.name)}">${escapeHtml(w.name)}</option>`); 
+            const savedDeviceWaiter = getDeviceWaiter() || lastSelectedWaiter;
+            if (savedDeviceWaiter) { 
+                waiterSelect.value = savedDeviceWaiter; 
+                lastSelectedWaiter = savedDeviceWaiter;
+            } 
+        } 
+        updateDeviceWaiterBadge();
+        const adminWaitersList = document.getElementById('admin-waiters-list'); 
+        if (adminWaitersList) { 
+            adminWaitersList.innerHTML = ''; 
+            data.waiters.forEach(w => adminWaitersList.innerHTML += `<span style="background: #2c2c2c; padding: 6px 12px; border-radius: 4px; border: 1px solid #444; display: flex; align-items: center; gap: 8px; font-size: 13px; font-weight: bold;">👤 ${escapeHtml(w.name)} <button onclick="deleteWaiter(${w.id})" style="background: #e74c3c; color: white; border: none; border-radius: 3px; padding: 2px 6px; cursor: pointer;">✕</button></span>`); 
+        } 
+    } catch (error) { 
+        console.error('Error:', error); 
+    } 
+}
 
 async function loadProducts() { try { const response = await fetch('/api/catalog/products'); const data = await response.json(); allProducts = data.products; displayProducts(allProducts); } catch (error) { console.error('Error:', error); } }
 
@@ -366,12 +672,13 @@ let clienteLlevarActual = null;
 let currentPax = 1;
 
 async function selectTable(table) {
+    triggerHaptic(20);
     // 1. Limpiamos la selección de todas las mesas
     document.querySelectorAll('.btn-table').forEach(b => b.classList.remove('selected'));
     // 2. Iluminamos solo la mesa que acabamos de tocar
     const activeBtn = document.querySelector(`.btn-table[data-id="${table.id}"]`);
     if (activeBtn) activeBtn.classList.add('selected');
-    currentTableId = table.id; currentTableSpan.textContent = table.table_number; btnDeselectTable.style.display = 'inline-block'; currentOrderId = null; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; const waiterLabel = waiterSelect.previousElementSibling;
+    draftTableId = null; currentTableId = table.id; currentTableSpan.textContent = table.table_number; btnDeselectTable.style.display = 'inline-block'; currentOrderId = null; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; const waiterLabel = waiterSelect.previousElementSibling;
 
     if (table.status === 'OCUPADA') {
         clienteLlevarActual = null; 
@@ -392,7 +699,12 @@ async function selectTable(table) {
         waiterSelect.style.color = '#fff'; 
         const waiterLabel = waiterSelect.previousElementSibling;
         if(waiterLabel) waiterLabel.innerHTML = 'Mesero en Turno:';
-        if (lastSelectedWaiter) waiterSelect.value = lastSelectedWaiter; 
+        
+        const savedWaiter = getDeviceWaiter() || lastSelectedWaiter;
+        if (savedWaiter) {
+            waiterSelect.value = savedWaiter;
+            lastSelectedWaiter = savedWaiter;
+        }
         
         if (table.table_number.toUpperCase().includes('LLEVAR')) {
             currentPax = 1; 
@@ -402,6 +714,8 @@ async function selectTable(table) {
             currentPax = 1; // 💡 Asume 1 persona por defecto en Comedor para no estorbar
         }
     }
+    await loadDraft(table.id);
+    if (currentTableId !== table.id) return;
     updateOrderUI();
 }
 
@@ -413,6 +727,7 @@ window.toggleTakeaway = function(index) { newOrderItems[index].is_takeaway = !ne
 
 async function addToOrder(product) {
     if (!currentTableId) { await customAlert('Selecciona una mesa primero.', 'warning'); return; }
+    triggerHaptic(35);
     
     const esParaLlevar = currentTableSpan.textContent.toUpperCase().includes('LLEVAR');
     
@@ -424,14 +739,29 @@ async function addToOrder(product) {
 }
 
 function openNoteModal(index) {
-    editingItemIndex = index; const item = newOrderItems[index]; noteModalTitle.textContent = `Nota para: ${item.name}`; modalNoteInput.value = item.notes; quickModifiersGrid.innerHTML = '';
+    editingItemIndex = index; 
+    const item = newOrderItems[index]; 
+    tempExtraPrice = item.extra_price || 0;
+    noteModalTitle.textContent = `Nota para: ${item.name}`; 
+    modalNoteInput.value = item.notes || ''; 
+    quickModifiersGrid.innerHTML = '';
     currentModifiers.forEach(mod => {
-        const btn = document.createElement('button'); const displayPrice = mod.price > 0 ? ` (+$${mod.price})` : ''; btn.textContent = mod.name + displayPrice;
-        btn.style.cssText = "padding: 8px 12px; background: #2c2c2c; border: 1px solid #444; border-radius: 4px; cursor: pointer; font-size: 13px; font-weight: bold; color: #fff;";
-        btn.onclick = () => { const currentVal = modalNoteInput.value.trim(); const additionText = mod.price > 0 ? `${mod.name} (+$${mod.price})` : mod.name; modalNoteInput.value = currentVal ? `${currentVal}, ${additionText}` : additionText; if (mod.price > 0) { newOrderItems[editingItemIndex].extra_price += mod.price; } };
+        const btn = document.createElement('button'); 
+        const displayPrice = mod.price > 0 ? ` (+$${mod.price})` : ''; 
+        btn.textContent = mod.name + displayPrice;
+        btn.className = 'btn-term';
+        btn.onclick = () => { 
+            const currentVal = modalNoteInput.value.trim(); 
+            const additionText = mod.price > 0 ? `${mod.name} (+$${mod.price})` : mod.name; 
+            modalNoteInput.value = currentVal ? `${currentVal}, ${additionText}` : additionText; 
+            if (mod.price > 0) { 
+                tempExtraPrice += mod.price; 
+            } 
+        };
         quickModifiersGrid.appendChild(btn);
     });
-    noteModal.style.display = 'flex'; modalNoteInput.focus();
+    noteModal.style.display = 'flex'; 
+    modalNoteInput.focus();
 }
 
 function removeNewItem(index) { newOrderItems.splice(index, 1); updateOrderUI(); }
@@ -484,6 +814,7 @@ window.editPax = async function() {
 };
 
 function updateOrderUI() {
+    syncDraft();
     orderItemsList.innerHTML = ''; 
     let rawItemsSum = 0; // Suma cruda solo para cuando es una mesa nueva sin guardar
     let newItemsTotal = 0;
@@ -495,15 +826,15 @@ function updateOrderUI() {
         if (esLlevar) {
             const nombreMostrar = clienteLlevarActual ? clienteLlevarActual : 'Sin Nombre (Toca Nombre ->)';
             orderItemsList.innerHTML += `
-            <div style="background: #2c2c2c; padding: 8px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border: 1px solid #444;">
-                <span style="color: #bdc3c7; font-weight: bold;">🛍️ Cliente: <span style="color: #f1c40f; font-size: 14px;">${nombreMostrar}</span></span>
-                <button onclick="editClientName()" style="background: #e67e22; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-weight: bold;">✏️ Nombre</button>
+            <div style="background: var(--surface-card); padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border: 1px solid var(--border-subtle);">
+                <span style="color: var(--text-secondary); font-weight: 700;">🛍️ Cliente: <span style="color: #fbbf24; font-size: 14px; font-weight: 800;">${nombreMostrar}</span></span>
+                <button onclick="editClientName()" style="background: var(--brand-primary); color: white; border: none; padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; font-weight: 700; font-size: 11px;">✏️ Nombre</button>
             </div>`;
         } else {
             orderItemsList.innerHTML += `
-            <div style="background: #2c2c2c; padding: 8px; border-radius: 6px; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border: 1px solid #444;">
-                <span style="color: #bdc3c7; font-weight: bold;">👥 Personas (PAX): <span style="color: #fff; font-size: 14px;">${currentPax}</span></span>
-                <button onclick="editPax()" style="background: #3498db; color: white; border: none; padding: 4px 10px; border-radius: 4px; cursor: pointer; font-weight: bold;">✏️ Cambiar</button>
+            <div style="background: var(--surface-card); padding: 8px 12px; border-radius: var(--radius-sm); margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 12px; border: 1px solid var(--border-subtle);">
+                <span style="color: var(--text-secondary); font-weight: 700;">👥 Personas (PAX): <span style="color: #fff; font-size: 14px; font-weight: 800; font-family: var(--font-mono);">${currentPax}</span></span>
+                <button onclick="editPax()" style="background: var(--surface-elevated); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.4); padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; font-weight: 700; font-size: 11px;">✏️ Cambiar</button>
             </div>`;
         }
     }
@@ -515,20 +846,20 @@ function updateOrderUI() {
         const unitPrice = item.price + (item.extra_price || 0); 
         rawItemsSum += unitPrice * item.quantity;
         const isPaid = item.paid === 1; 
-        const textStyle = isPaid ? 'text-decoration: line-through; color: #555;' : 'color: #fff; font-weight: 500;';
-        const paidBadge = isPaid ? ' <span style="background: #27ae60; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">PAGADO</span>' : '';
-        const takeawayBadge = item.is_takeaway ? ' <span style="background: #e67e22; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">🥡 LLEVAR</span>' : '';
+        const textStyle = isPaid ? 'text-decoration: line-through; opacity: 0.5;' : 'color: #fff; font-weight: 600;';
+        const paidBadge = isPaid ? ' <span style="background: rgba(16, 185, 129, 0.2); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.4); padding: 2px 6px; border-radius: var(--radius-xs); font-size: 10px; font-weight: 800;">PAGADO</span>' : '';
+        const takeawayBadge = item.is_takeaway ? ' <span style="background: rgba(139, 92, 246, 0.2); color: #c084fc; border: 1px solid rgba(139, 92, 246, 0.4); padding: 2px 6px; border-radius: var(--radius-xs); font-size: 10px; font-weight: 800;">🥡 LLEVAR</span>' : '';
         
-        orderItemsList.innerHTML += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-size: 14px; border-bottom: 1px dashed #333; padding-bottom: 4px; ${textStyle}"><div><span>${item.quantity}x ${item.name}</span>${takeawayBadge}${paidBadge}${item.notes ? `<br><small style="color: #e67e22;">↳ ${item.notes}</small>` : ''}</div><div style="display: flex; gap: 10px; align-items: center;"><span>$${unitPrice * item.quantity}</span>${!isPaid ? `<button onclick="openCancelModal('item', ${item.id})" style="background: none; border: none; cursor: pointer; font-size: 16px;">🗑️</button>` : ''}</div></div>`;
+        orderItemsList.innerHTML += `<div class="order-item-row" style="${textStyle}"><div><span style="font-weight: 700;">${item.quantity}x ${escapeHtml(item.name)}</span>${takeawayBadge}${paidBadge}${item.notes ? `<br><small style="color: #fbbf24; font-weight: 600;">↳ ${escapeHtml(item.notes)}</small>` : ''}</div><div style="display: flex; gap: 8px; align-items: center;"><span style="font-family: var(--font-mono); font-weight: 700;">$${(unitPrice * item.quantity).toFixed(2)}</span>${!isPaid ? `<button onclick="openCancelModal('item', ${item.id})" style="background: transparent; border: none; cursor: pointer; font-size: 15px; opacity: 0.7; padding: 2px;" title="Cancelar Platillo">🗑️</button>` : ''}</div></div>`;
     });
 
     // 2. Dibujamos los items nuevos que el mesero apenas está pidiendo
     newOrderItems.forEach((item, index) => {
         const unitPrice = item.price + (item.extra_price || 0); 
         newItemsTotal += unitPrice * item.quantity;
-        const takeawayBadge = item.is_takeaway ? ' <span style="background: #e67e22; color: white; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: bold;">🥡 LLEVAR</span>' : '';
+        const takeawayBadge = item.is_takeaway ? ' <span style="background: rgba(139, 92, 246, 0.2); color: #c084fc; border: 1px solid rgba(139, 92, 246, 0.4); padding: 2px 6px; border-radius: var(--radius-xs); font-size: 10px; font-weight: 800;">🥡 LLEVAR</span>' : '';
         
-        orderItemsList.innerHTML += `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; font-weight: bold; color: #d35400; font-size: 14px; border-bottom: 1px dashed #333; padding-bottom: 4px;"><div onclick="openNoteModal(${index})" style="cursor: pointer; flex: 1;"><span>+ ${item.quantity}x ${item.name}</span>${takeawayBadge}${item.notes ? `<br><small style="color: #e74c3c;">↳ ${item.notes}</small>` : '<br><small style="color: #f39c12; font-style: italic;">(Toca para nota rápida)</small>'}</div><div style="display: flex; gap: 8px; align-items: center;"><span>$${unitPrice * item.quantity}</span><button onclick="toggleTakeaway(${index})" style="background: none; border: none; cursor: pointer; font-size: 16px;" title="Marcar para llevar">🥡</button><button onclick="openNoteModal(${index})" style="background: none; border: none; cursor: pointer; font-size: 16px;">✏️</button><button onclick="removeNewItem(${index})" style="background: none; border: none; cursor: pointer; font-size: 16px;">❌</button></div></div>`;
+        orderItemsList.innerHTML += `<div class="order-item-row" style="border-left: 3px solid var(--brand-primary);"><div onclick="openNoteModal(${index})" style="cursor: pointer; flex: 1;"><span style="color: var(--brand-primary); font-weight: 800;">+ ${item.quantity}x ${escapeHtml(item.name)}</span>${takeawayBadge}${item.notes ? `<br><small style="color: #f87171; font-weight: 700;">↳ ${escapeHtml(item.notes)}</small>` : '<br><small style="color: var(--text-muted); font-size: 11px;">(Toca para nota rápida)</small>'}</div><div style="display: flex; gap: 6px; align-items: center;"><span style="font-family: var(--font-mono); font-weight: 800; color: #fff;">$${(unitPrice * item.quantity).toFixed(2)}</span><button onclick="toggleTakeaway(${index})" style="background: var(--surface-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-xs); cursor: pointer; padding: 4px 6px; font-size: 13px;" title="Marcar para llevar">🥡</button><button onclick="openNoteModal(${index})" style="background: var(--surface-subtle); border: 1px solid var(--border-subtle); border-radius: var(--radius-xs); cursor: pointer; padding: 4px 6px; font-size: 13px;" title="Editar nota">✏️</button><button onclick="removeNewItem(${index})" style="background: rgba(239, 68, 68, 0.15); border: 1px solid rgba(239, 68, 68, 0.4); border-radius: var(--radius-xs); color: #f87171; cursor: pointer; padding: 4px 6px; font-size: 13px;" title="Quitar">❌</button></div></div>`;
     });
     
     // --- SOLUCIÓN DEL BUG DE SINCRONIZACIÓN ---
@@ -571,6 +902,30 @@ function updateOrderUI() {
         btnSendPrint.disabled = true; btnSendSave.disabled = true; 
         document.getElementById('payment-buttons-container').style.display = 'none'; paymentPanel.style.display = 'none'; if(btnCancelOrder) btnCancelOrder.style.display = 'none'; 
     }
+
+    // Actualización de la barra flotante móvil (#mobile-order-bar)
+    const mobileOrderBar = document.getElementById('mobile-order-bar');
+    const mobileBarTableName = document.getElementById('mobile-bar-table-name');
+    const mobileBarCount = document.getElementById('mobile-bar-count');
+    const mobileBarTotal = document.getElementById('mobile-bar-total');
+    const mobileBarActionBtn = document.getElementById('mobile-bar-action-btn');
+
+    if (mobileOrderBar && mobileBarTableName && mobileBarCount && mobileBarTotal) {
+        if (currentTableId) {
+            const totalItemsCount = savedOrderItems.reduce((acc, i) => acc + i.quantity, 0) + newOrderItems.reduce((acc, i) => acc + i.quantity, 0);
+            mobileBarTableName.textContent = currentTableSpan.textContent || 'Mesa';
+            mobileBarCount.textContent = `${totalItemsCount} ${totalItemsCount === 1 ? 'platillo' : 'platillos'}`;
+            mobileBarTotal.textContent = `$${displayTotal.toFixed(2)}`;
+            if (newOrderItems.length > 0) {
+                mobileBarActionBtn.innerHTML = `<span>Ver Comanda (${newOrderItems.length} nuevos)</span> 📋`;
+            } else {
+                mobileBarActionBtn.innerHTML = `<span>Ver Comanda</span> 📋`;
+            }
+            mobileOrderBar.classList.add('bar-active');
+        } else {
+            mobileOrderBar.classList.remove('bar-active');
+        }
+    }
 }
 
 async function sendOrderToServer(shouldPrint) {
@@ -594,11 +949,14 @@ async function sendOrderToServer(shouldPrint) {
     }
 
     const itemsToPrint = [...newOrderItems]; const itemsForApi = newOrderItems.map(item => ({ product_id: item.product_id, quantity: item.quantity, notes: item.notes, is_takeaway: item.is_takeaway, station: item.station, extra_price: item.extra_price }));
+    await draftQueue;
     try {
-        let url = '/api/orders'; let bodyData = { table_id: currentTableId, waiter_name: selectedWaiter, items: itemsForApi, is_printed: shouldPrint, guests: currentPax }; let orderNum = currentOrderId;
-        if (currentOrderId) { url = `/api/orders/${currentOrderId}/items`; bodyData = { items: itemsForApi, is_printed: shouldPrint }; }
+        let url = '/api/orders'; let bodyData = { table_id: currentTableId, waiter_name: selectedWaiter, items: itemsForApi, is_printed: shouldPrint, guests: currentPax, device_id: DEVICE_ID }; let orderNum = currentOrderId;
+        if (currentOrderId) { url = `/api/orders/${currentOrderId}/items`; bodyData = { items: itemsForApi, is_printed: shouldPrint, device_id: DEVICE_ID }; }
         const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyData) }); const result = await response.json();
         if (response.ok) { 
+            triggerHaptic(60);
+            closeMobileSheet();
             if (!orderNum) orderNum = result.orderId; 
             if (shouldPrint) { showComanda(itemsToPrint, orderNum, currentTableSpan.textContent, selectedWaiter); } 
             else { await customAlert('Adición registrada.', 'success'); } 
@@ -698,6 +1056,32 @@ function calcularCambioEnVivo() {
 
 // El escuchador que hace la magia cada vez que tecleas
 inputAmountPaid.addEventListener('input', calcularCambioEnVivo);
+
+// ========================================================
+// FASE 1: BILLETES RÁPIDOS (QUICK CASH) PARA CAJA
+// ========================================================
+window.setQuickCash = function(val) {
+    if (!inputAmountPaid) return;
+    const esperado = getMontoEsperado();
+
+    if (val === 'exact') {
+        inputAmountPaid.value = esperado.toFixed(2);
+    } else if (val === 'add100') {
+        const current = parseFloat(inputAmountPaid.value) || 0;
+        inputAmountPaid.value = (current + 100).toFixed(2);
+    } else {
+        // Asignación directa de billete ($50, $100, $200, $500, $1000)
+        inputAmountPaid.value = parseFloat(val).toFixed(2);
+    }
+
+    calcularCambioEnVivo();
+};
+
+window.clearQuickCash = function() {
+    if (!inputAmountPaid) return;
+    inputAmountPaid.value = '';
+    calcularCambioEnVivo();
+};
 
 btnPayOrder.onclick = () => {
     const invoiceCheckbox = document.getElementById('require-invoice'); 
@@ -1013,14 +1397,30 @@ async function printTicket() {
 
 window.reprintOrder = async function(orderId, tableNumber) { if (!navigator.onLine) { await customAlert('No hay red.', 'error'); return; } try { const response = await fetch(`/api/orders/${orderId}`); const data = await response.json(); if (response.ok) { showReprintTicket(data.order, tableNumber); } else { await customAlert('Error al recuperar el ticket', 'error'); } } catch(e) { await customAlert('Fallo de red.', 'error'); } };
 function showReprintTicket(order, tableNumber) {
-    const ticketModal = document.getElementById('ticket-modal'); const ticketContent = document.getElementById('ticket-content'); let date = order.closed_at || order.created_at; let method = order.payment_method || 'EFECTIVO'; let change = order.change_amount || 0; let tipAmount = order.tip_amount || 0; let html = `<h2 style="margin: 0; font-size: 18px; font-weight: 900;">ASADERO LA ESTAMPIDA</h2><p style="margin: 5px 0; font-size: 12px;">Blvd Francisco Fernández Arteaga #2096</p><p style="margin: 5px 0; font-size: 12px;">Tuxtepec, Oaxaca</p><p style="margin: 5px 0; font-size: 12px;">Fecha Cierre: ${date}</p><p style="margin: 5px 0; font-size: 15px; font-weight: bold; color: #000;">TICKET #${order.id.toString().padStart(5, '0')} <span style="font-size: 10px; color:#555;">(Reimpresión)</span></p><p style="margin: 5px 0; font-size: 12px;">Mesa: ${tableNumber} | Mesero: ${order.waiter_name}</p><hr style="border-top: 1px dashed #000; margin: 10px 0;">
-    <div style="text-align: left; font-size: 12px;">
-        <div style="display: flex; justify-content: space-between; font-weight: bold; border-bottom: 1px solid #000; margin-bottom: 5px; padding-bottom: 3px;">
-            <span style="width: 12%;">Cant</span>
-            <span style="width: 43%;">Descripción</span>
-            <span style="width: 20%; text-align: right;">P.U.</span>
-            <span style="width: 25%; text-align: right;">Total</span>
-        </div>`; 
+    const ticketModal = document.getElementById('ticket-modal'); 
+    const ticketContent = document.getElementById('ticket-content'); 
+    let date = order.closed_at || order.created_at; 
+    let method = order.payment_method || 'EFECTIVO'; 
+    let change = order.change_amount || 0; 
+    let tipAmount = order.tip_amount || 0; 
+    let html = `
+    <div style="width: 100%; max-width: 300px; margin: 0 auto; font-family: 'Courier New', Courier, monospace; color: #000;">
+        <h2 style="margin: 0; font-size: 18px; font-weight: 900; text-align: center;">ASADERO LA ESTAMPIDA</h2>
+        <p style="margin: 3px 0; font-size: 12px; text-align: center;">Blvd Francisco Fernández Arteaga #2096</p>
+        <p style="margin: 3px 0; font-size: 12px; text-align: center;">Tuxtepec, Oaxaca</p>
+        <p style="margin: 3px 0; font-size: 12px; text-align: center;">Fecha Cierre: ${date}</p>
+        <p style="margin: 8px 0 5px 0; font-size: 15px; font-weight: bold; color: #000; text-align: center;">TICKET #${order.id.toString().padStart(5, '0')} <span style="font-size: 10px; color:#555;">(Reimpresión)</span></p>
+        <div style="display: flex; justify-content: space-between; font-size: 12px; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; margin: 6px 0;">
+            <span>Mesa: ${tableNumber}</span>
+            <span>Mesero: ${order.waiter_name}</span>
+        </div>
+        <div style="text-align: left; font-size: 12px;">
+            <div style="display: flex; justify-content: space-between; font-weight: bold; border-bottom: 1px solid #000; margin-bottom: 5px; padding-bottom: 3px;">
+                <span style="width: 12%;">Cant</span>
+                <span style="width: 43%;">Descripción</span>
+                <span style="width: 20%; text-align: right;">P.U.</span>
+                <span style="width: 25%; text-align: right;">Total</span>
+            </div>`; 
     let totalTicket = 0; 
     let groupedItems = [];
     order.items.forEach(item => {
@@ -1040,7 +1440,27 @@ function showReprintTicket(order, tableNumber) {
             <span style="width: 25%; text-align: right;">$${subtotal.toFixed(2)}</span>
         </div>`; 
     });  
-     html += `</div><hr style="border-top: 1px dashed #000; margin: 10px 0;"><div style="text-align: right; font-size: 13px;">`; if (order.discount_amount > 0) { html += `<p style="font-size: 14px; margin-bottom: 5px; color: #555;"><strong>Descuento: -$${order.discount_amount.toFixed(2)}</strong></p>`; } html += `<p style="font-size: 15px; margin-bottom: 5px;"><strong>SUBTOTAL: $${order.total.toFixed(2)}</strong></p>`; let granTotal = order.total + tipAmount; if (tipAmount > 0) { html += `<p style="font-size: 14px; margin-bottom: 5px; color: #555;"><strong>Propina: $${tipAmount.toFixed(2)}</strong></p>`; } html += `<p style="font-size: 18px; margin-bottom: 10px; font-weight: 900;">TOTAL COBRADO: $${granTotal.toFixed(2)}</p><p>Pagó con ${method}</p><p>Cambio: $${change.toFixed(2)}</p></div><p style="margin-top: 20px; font-size: 11px; text-align: center; font-weight: bold;">¡Gracias por su preferencia!</p>`; ticketContent.innerHTML = html; isReprinting = true; ticketModal.style.display = 'flex';
+    html += `</div>
+        <hr style="border-top: 1px dashed #000; margin: 10px 0;">
+        <div style="text-align: right; font-size: 13px;">`; 
+    if (order.discount_amount > 0) { 
+        html += `<p style="font-size: 14px; margin-bottom: 5px; color: #555;"><strong>Descuento: -$${order.discount_amount.toFixed(2)}</strong></p>`; 
+    } 
+    html += `<p style="font-size: 15px; margin-bottom: 5px;"><strong>SUBTOTAL: $${order.total.toFixed(2)}</strong></p>`; 
+    let granTotal = order.total + tipAmount; 
+    if (tipAmount > 0) { 
+        html += `<p style="font-size: 14px; margin-bottom: 5px; color: #555;"><strong>Propina: $${tipAmount.toFixed(2)}</strong></p>`; 
+    } 
+    html += `
+            <p style="font-size: 18px; margin-bottom: 10px; font-weight: 900;">TOTAL COBRADO: $${granTotal.toFixed(2)}</p>
+            <p>Pagó con ${method}</p>
+            <p>Cambio: $${change.toFixed(2)}</p>
+        </div>
+        <p style="margin-top: 20px; font-size: 11px; text-align: center; font-weight: bold;">¡Gracias por su preferencia!</p>
+    </div>`; 
+    ticketContent.innerHTML = html; 
+    isReprinting = true; 
+    ticketModal.style.display = 'flex';
 }
 
 window.reopenOrder = async function(orderId, tableId) {
@@ -1062,33 +1482,226 @@ if (btnBackupDb) {
     };
 }
 
+let adminProductsList = [];
+
 async function loadAdminProducts() { 
     const tbody = document.getElementById('admin-products-tbody'); 
     if (!tbody) return; 
-    const response = await fetch('/api/catalog/products'); 
-    const data = await response.json(); 
-    tbody.innerHTML = ''; 
-    data.products.forEach(p => { 
-        const isAvailable = p.is_available !== 0;
-        const statusBtn = isAvailable 
-            ? `<button onclick="toggleProductStatus(${p.id}, 0)" style="background:#27ae60; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🟢 Disponible</button>`
-            : `<button onclick="toggleProductStatus(${p.id}, 1)" style="background:#c0392b; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🔴 Agotado</button>`;
+    try {
+        const response = await fetch('/api/catalog/products'); 
+        const data = await response.json(); 
+        adminProductsList = data.products || [];
+        tbody.innerHTML = ''; 
+        adminProductsList.forEach(p => { 
+            const isAvailable = p.is_available !== 0;
+            const statusBtn = isAvailable 
+                ? `<button onclick="toggleProductStatus(${p.id}, 0)" style="background:#27ae60; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🟢 Disponible</button>`
+                : `<button onclick="toggleProductStatus(${p.id}, 1)" style="background:#c0392b; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🔴 Agotado</button>`;
 
-        tbody.innerHTML += `<tr><td>${p.name}</td><td>$${p.price.toFixed(2)}</td><td>${p.station}</td><td>${p.category}</td><td style="text-align: center;">${statusBtn}</td><td><button onclick="editProduct(${p.id}, '${p.name}', ${p.price}, '${p.station}', '${p.category}')" class="btn-secondary" style="background-color: #f39c12; padding: 4px; border: none;">Editar</button> <button onclick="deleteProduct(${p.id})" class="btn-secondary" style="background-color: #e74c3c; padding: 4px; border: none; color: white;">X</button></td></tr>`; 
-    }); 
+            tbody.innerHTML += `<tr><td>${p.name}</td><td>$${p.price.toFixed(2)}</td><td>${p.station}</td><td>${p.category}</td><td style="text-align: center;">${statusBtn}</td><td><button onclick="editProduct(${p.id})" class="btn-secondary" style="background-color: #f39c12; padding: 4px; border: none;">Editar</button> <button onclick="deleteProduct(${p.id})" class="btn-secondary" style="background-color: #e74c3c; padding: 4px; border: none; color: white;">X</button></td></tr>`; 
+        }); 
+    } catch(err) {
+        console.error('Error al cargar productos de admin:', err);
+    }
 }
 
-window.toggleProductStatus = async function(id, newStatus) { try { await fetch(`/api/catalog/products/${id}/toggle`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_available: newStatus }) }); loadAdminProducts(); loadProducts(); } catch(e) { console.error(e); } };
+window.toggleProductStatus = async function(id, newStatus) { 
+    try { 
+        await fetch(`/api/catalog/products/${id}/toggle`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ is_available: newStatus }) }); 
+        loadAdminProducts(); 
+        loadProducts(); 
+    } catch(e) { 
+        console.error(e); 
+    } 
+};
 
-const modifierForm = document.getElementById('modifier-form'); if (modifierForm) modifierForm.onsubmit = async (e) => { e.preventDefault(); const priceVal = document.getElementById('new-modifier-price').value; await fetch('/api/catalog/modifiers', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: document.getElementById('new-modifier-name').value.trim(), price: priceVal ? parseFloat(priceVal) : 0 }) }); document.getElementById('new-modifier-name').value = ''; document.getElementById('new-modifier-price').value = ''; loadModifiers(); };
-async function deleteModifier(id) { if (!(await customConfirm('¿Eliminar modificador?'))) return; await fetch(`/api/catalog/modifiers/${id}`, { method: 'DELETE' }); loadModifiers(); }
-document.getElementById('category-form').onsubmit = async (e) => { e.preventDefault(); await fetch('/api/catalog/categories', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: document.getElementById('new-category-name').value.trim() }) }); document.getElementById('new-category-name').value = ''; loadCategories(); };
-document.getElementById('waiter-form').onsubmit = async (e) => { e.preventDefault(); await fetch('/api/catalog/waiters', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: document.getElementById('new-waiter-name').value.trim() }) }); document.getElementById('new-waiter-name').value = ''; loadWaiters(); };
-async function deleteWaiter(id) { if (!(await customConfirm('¿Eliminar mesero?'))) return; await fetch(`/api/catalog/waiters/${id}`, { method: 'DELETE' }); loadWaiters(); }
-document.getElementById('table-form').onsubmit = async (e) => { e.preventDefault(); await fetch('/api/catalog/tables', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ table_number: document.getElementById('new-table-number').value.trim() }) }); document.getElementById('new-table-number').value = ''; loadTables(); };
-document.getElementById('product-form').onsubmit = async (e) => { e.preventDefault(); await fetch('/api/catalog/products', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: document.getElementById('new-name').value, price: parseFloat(document.getElementById('new-price').value), station: document.getElementById('new-station').value, category: document.getElementById('new-category').value }) }); document.getElementById('product-form').reset(); loadAdminProducts(); loadProducts(); };
-async function deleteProduct(id) { if (!(await customConfirm('¿Estás seguro de eliminar este platillo?'))) return; await fetch(`/api/catalog/products/${id}`, { method: 'DELETE' }); loadAdminProducts(); loadProducts(); }
-async function editProduct(id, name, price, station, category) { const newName = await customPrompt("Nuevo nombre:", "text", name); if (!newName) return; await new Promise(resolve => setTimeout(resolve, 250)); const newPrice = await customPrompt("Nuevo precio:", "number", price); if (!newPrice) return; await fetch(`/api/catalog/products/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName, price: parseFloat(newPrice), station, category }) }); loadAdminProducts(); loadProducts(); }
+const modifierForm = document.getElementById('modifier-form'); 
+if (modifierForm) modifierForm.onsubmit = async (e) => { 
+    e.preventDefault(); 
+    const name = document.getElementById('new-modifier-name').value.trim();
+    const priceVal = document.getElementById('new-modifier-price').value; 
+    try {
+        const response = await fetch('/api/catalog/modifiers', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ name, price: priceVal ? parseFloat(priceVal) : 0 }) 
+        }); 
+        if (response.ok) {
+            document.getElementById('new-modifier-name').value = ''; 
+            document.getElementById('new-modifier-price').value = ''; 
+            loadModifiers(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al guardar modificador', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al guardar modificador', 'error');
+    }
+};
+
+window.deleteModifier = async function(id) { 
+    if (!(await customConfirm('¿Eliminar modificador?'))) return; 
+    try {
+        const response = await fetch(`/api/catalog/modifiers/${id}`, { method: 'DELETE' }); 
+        if (response.ok) {
+            loadModifiers(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al eliminar', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al eliminar', 'error');
+    }
+};
+
+const categoryForm = document.getElementById('category-form');
+if (categoryForm) categoryForm.onsubmit = async (e) => { 
+    e.preventDefault(); 
+    const name = document.getElementById('new-category-name').value.trim();
+    try {
+        const response = await fetch('/api/catalog/categories', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ name }) 
+        }); 
+        if (response.ok) {
+            document.getElementById('new-category-name').value = ''; 
+            loadCategories(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al crear categoría', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al crear categoría', 'error');
+    }
+};
+
+const waiterForm = document.getElementById('waiter-form');
+if (waiterForm) waiterForm.onsubmit = async (e) => { 
+    e.preventDefault(); 
+    const name = document.getElementById('new-waiter-name').value.trim();
+    try {
+        const response = await fetch('/api/catalog/waiters', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ name }) 
+        }); 
+        if (response.ok) {
+            document.getElementById('new-waiter-name').value = ''; 
+            loadWaiters(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al crear mesero', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al crear mesero', 'error');
+    }
+};
+
+window.deleteWaiter = async function(id) { 
+    if (!(await customConfirm('¿Eliminar mesero?'))) return; 
+    try {
+        const response = await fetch(`/api/catalog/waiters/${id}`, { method: 'DELETE' }); 
+        if (response.ok) {
+            loadWaiters(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al eliminar mesero', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al eliminar mesero', 'error');
+    }
+};
+
+const tableForm = document.getElementById('table-form');
+if (tableForm) tableForm.onsubmit = async (e) => { 
+    e.preventDefault(); 
+    const table_number = document.getElementById('new-table-number').value.trim();
+    try {
+        const response = await fetch('/api/catalog/tables', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ table_number }) 
+        }); 
+        if (response.ok) {
+            document.getElementById('new-table-number').value = ''; 
+            loadTables(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al crear mesa', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al crear mesa', 'error');
+    }
+};
+
+const productForm = document.getElementById('product-form');
+if (productForm) productForm.onsubmit = async (e) => { 
+    e.preventDefault(); 
+    const name = document.getElementById('new-name').value.trim();
+    const price = parseFloat(document.getElementById('new-price').value);
+    const station = document.getElementById('new-station').value;
+    const category = document.getElementById('new-category').value;
+    try {
+        const response = await fetch('/api/catalog/products', { 
+            method: 'POST', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ name, price, station, category }) 
+        }); 
+        if (response.ok) {
+            productForm.reset(); 
+            loadAdminProducts(); 
+            loadProducts(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al crear producto', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al crear producto', 'error');
+    }
+};
+
+window.deleteProduct = async function(id) { 
+    if (!(await customConfirm('¿Estás seguro de eliminar este platillo?'))) return; 
+    try {
+        const response = await fetch(`/api/catalog/products/${id}`, { method: 'DELETE' }); 
+        if (response.ok) {
+            loadAdminProducts(); 
+            loadProducts(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al eliminar', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al eliminar platillo', 'error');
+    }
+};
+
+window.editProduct = async function(id) { 
+    const p = adminProductsList.find(item => item.id === id);
+    if (!p) return;
+    const newName = await customPrompt("Nuevo nombre:", "text", p.name); 
+    if (!newName) return; 
+    await new Promise(resolve => setTimeout(resolve, 250)); 
+    const newPrice = await customPrompt("Nuevo precio:", "number", p.price); 
+    if (!newPrice || isNaN(parseFloat(newPrice))) return; 
+    try {
+        const response = await fetch(`/api/catalog/products/${id}`, { 
+            method: 'PUT', 
+            headers: { 'Content-Type': 'application/json' }, 
+            body: JSON.stringify({ name: newName.trim(), price: parseFloat(newPrice), station: p.station, category: p.category }) 
+        }); 
+        if (response.ok) {
+            loadAdminProducts(); 
+            loadProducts(); 
+        } else {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al actualizar', 'error');
+        }
+    } catch(e) {
+        await customAlert('Error de red al actualizar platillo', 'error');
+    }
+};
 
 const corteDatePicker = document.getElementById('corte-date-picker');
 const corteTitleDisplay = document.getElementById('corte-title-display');
@@ -1162,31 +1775,31 @@ async function loadCorteData() {
 
         const wsBox = document.getElementById('waiter-summary-box'); 
         wsBox.innerHTML = `
-        <div style="display: flex; gap: 10px; margin-bottom: 20px; width: 100%;">
-            <div style="background: #2980b9; padding: 12px; border-radius: 6px; flex: 1; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
-                <span style="font-size: 11px; font-weight: bold; color: #ecf0f1; letter-spacing: 1px;">💳 COBROS TPV (TERMINAL)</span>
-                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px;">$${sum.total_tarjeta.toFixed(2)}</h3>
+        <div style="display: flex; gap: 12px; margin-bottom: 20px; width: 100%; flex-wrap: wrap;">
+            <div style="background: var(--surface-elevated); padding: 14px 18px; border-radius: var(--radius-md); flex: 1; min-width: 180px; border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-info); box-shadow: var(--shadow-sm);">
+                <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px;">💳 COBROS TPV (TERMINAL)</span>
+                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${sum.total_tarjeta.toFixed(2)}</h3>
             </div>
-            <div style="background: #8e44ad; padding: 12px; border-radius: 6px; flex: 1; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
-                <span style="font-size: 11px; font-weight: bold; color: #ecf0f1; letter-spacing: 1px;">🛍️ VENTAS PARA LLEVAR</span>
-                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px;">$${totalLlevar.toFixed(2)}</h3>
+            <div style="background: var(--surface-elevated); padding: 14px 18px; border-radius: var(--radius-md); flex: 1; min-width: 180px; border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-purple); box-shadow: var(--shadow-sm);">
+                <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px;">🛍️ VENTAS PARA LLEVAR</span>
+                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${totalLlevar.toFixed(2)}</h3>
             </div>
-            <div style="background: #27ae60; padding: 12px; border-radius: 6px; flex: 1; border: 1px solid #333; box-shadow: 0 4px 6px rgba(0,0,0,0.3);">
-                <span style="font-size: 11px; font-weight: bold; color: #ecf0f1; letter-spacing: 1px;">🍽️ VENTAS COMEDOR</span>
-                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px;">$${totalComedor.toFixed(2)}</h3>
+            <div style="background: var(--surface-elevated); padding: 14px 18px; border-radius: var(--radius-md); flex: 1; min-width: 180px; border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-success); box-shadow: var(--shadow-sm);">
+                <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px;">🍽️ VENTAS COMEDOR</span>
+                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${totalComedor.toFixed(2)}</h3>
             </div>
         </div>
         
-        <h4 style="width: 100%; margin: 0 0 10px 0; color: #bdc3c7; border-bottom: 1px solid #333; padding-bottom: 5px;">Rendimiento por Mesero:</h4>
+        <h4 style="width: 100%; margin: 0 0 10px 0; color: var(--text-secondary); border-bottom: 1px solid var(--border-subtle); padding-bottom: 6px; font-size: 13px; font-weight: 800;">Rendimiento por Mesero:</h4>
         <div id="meseros-grid" style="display: flex; gap: 10px; width: 100%; flex-wrap: wrap;"></div>
         `;
         
         const meserosGrid = document.getElementById('meseros-grid');
         if (Object.keys(sum.ventas_por_mesero).length === 0) { 
-            meserosGrid.innerHTML = '<p style="color: #7f8c8d; font-size: 14px;">No hay ventas registradas en esta fecha.</p>'; 
+            meserosGrid.innerHTML = '<p style="color: var(--text-muted); font-size: 13px;">No hay ventas registradas en esta fecha.</p>'; 
         } else { 
             for (const [waiter, info] of Object.entries(sum.ventas_por_mesero)) { 
-                meserosGrid.innerHTML += `<div style="background: #1a1a1a; padding: 10px; border-radius: 6px; border-left: 4px solid #d35400; border-top: 1px solid #333; border-right: 1px solid #333; border-bottom: 1px solid #333; flex: 1; min-width: 150px;"><span style="font-size: 12px; font-weight: bold; color: #bdc3c7;">👤 ${waiter}</span><h4 style="margin: 4px 0 0; color: #fff;">$${info.total.toFixed(2)}</h4><small style="color: #d35400; font-weight: bold;">${info.tickets} tickets</small></div>`; 
+                meserosGrid.innerHTML += `<div style="background: var(--surface-elevated); padding: 12px 14px; border-radius: var(--radius-md); border-left: 4px solid var(--brand-primary); border: 1px solid var(--border-subtle); flex: 1; min-width: 160px; box-shadow: var(--shadow-sm);"><span style="font-size: 12px; font-weight: 700; color: var(--text-secondary);">👤 ${waiter}</span><h4 style="margin: 4px 0 0; color: #fff; font-size: 18px; font-family: var(--font-mono);">$${info.total.toFixed(2)}</h4><small style="color: var(--brand-primary); font-weight: 700;">${info.tickets} tickets</small></div>`; 
             } 
         }
         // ====================================================
@@ -1261,6 +1874,20 @@ socket.on('update-tables', () => {
 });
 socket.on('update-products', () => { 
     if(posView.style.display !== 'none' && navigator.onLine) loadProducts(); 
+});
+// Otro dispositivo cambió el borrador de una mesa: si la tengo abierta, muestro lo mismo.
+socket.on('draft-updated', (data) => {
+    if (!data || data.device_id === DEVICE_ID) return;
+    if (!currentTableId || Number(data.table_id) !== Number(currentTableId) || draftTableId !== currentTableId) return;
+    if (data.sent) {
+        // La comanda ya se envió desde otro dispositivo: recargar la cuenta de la mesa
+        selectTable({ id: currentTableId, table_number: currentTableSpan.textContent, status: 'OCUPADA' });
+        return;
+    }
+    if (noteModal.style.display === 'flex') noteModal.style.display = 'none';
+    newOrderItems = data.items || [];
+    draftSynced = serializeDraft(newOrderItems);
+    updateOrderUI();
 });
 
 function playServiceBell() {
@@ -1740,9 +2367,9 @@ window.toggleInvoice = async function(orderId) {
 };
 
 window.addEventListener('beforeunload', function (e) {
-    if (newOrderItems && newOrderItems.length > 0) {
+    if (draftPending > 0) {
         e.preventDefault();
-        e.returnValue = 'Tienes platillos sin enviar a cocina. ¿Seguro que quieres salir y perderlos?';
+        e.returnValue = 'Se están guardando platillos. Espera un momento antes de salir.';
     }
 });
 
@@ -1831,7 +2458,18 @@ window.filtrarCatalogo = function() {
 // 📡 ESCUCHADOR INVISIBLE: La PC de la caja atrapa los tickets de los celulares
 socket.on('ejecutar-impresion-pc', (htmlRemoto) => {
     if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
-        document.getElementById('ticket-content').innerHTML = htmlRemoto;
+        // Sanitizar HTML remoto: solo permitir tags seguros para impresión
+        const tempDiv = document.createElement('div');
+        tempDiv.innerHTML = htmlRemoto;
+        tempDiv.querySelectorAll('script, iframe, object, embed, form, input').forEach(el => el.remove());
+        tempDiv.querySelectorAll('*').forEach(el => {
+            [...el.attributes].forEach(attr => {
+                if (attr.name.startsWith('on') || attr.name === 'href' && attr.value.startsWith('javascript:')) {
+                    el.removeAttribute(attr.name);
+                }
+            });
+        });
+        document.getElementById('ticket-content').innerHTML = tempDiv.innerHTML;
         printTicket(); // Llama a imprimir localmente en la caja
     }
 });
@@ -1847,8 +2485,8 @@ window.verListaGastos = function() {
             container.innerHTML += `
                 <div style="background: #2c2c2c; padding: 10px; margin-bottom: 8px; border-radius: 6px; display: flex; justify-content: space-between; align-items: center; border-left: 4px solid #e74c3c;">
                     <div>
-                        <strong style="color: #fff; font-size: 14px;">${g.concept.toUpperCase()}</strong><br>
-                        <small style="color: #bdc3c7;">${g.category} - ${g.created_at.split(' ')[1] || ''}</small>
+                        <strong style="color: #fff; font-size: 14px;">${escapeHtml(g.concept.toUpperCase())}</strong><br>
+                        <small style="color: #bdc3c7;">${escapeHtml(g.category)} - ${g.created_at.split(' ')[1] || ''}</small>
                     </div>
                     <div style="display: flex; align-items: center; gap: 10px;">
                         <strong style="color: #e74c3c; font-size: 16px;">$${g.amount.toFixed(2)}</strong>
