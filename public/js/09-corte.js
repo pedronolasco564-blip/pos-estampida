@@ -7,29 +7,6 @@ if (corteDatePicker) { corteDatePicker.addEventListener('change', () => { loadCo
 const auditDatePicker = document.getElementById('audit-date-picker');
 if (auditDatePicker) { auditDatePicker.addEventListener('change', () => { loadFullAuditLogs(); }); }
 
-const btnPrintCorte = document.getElementById('btn-print-corte');
-if (btnPrintCorte) {
-    btnPrintCorte.onclick = async () => {
-        if (!(await customConfirm('¿Deseas enviar este Corte a la impresora térmica?', 'Imprimir Corte'))) return;
-        try { 
-            const dateVal = corteDatePicker.value || obtenerFechaLocal(); 
-            const response = await fetch(`/api/reports/corte/print?date=${dateVal}`, { method: 'POST' }); 
-            
-            if (response.ok) { 
-                await customAlert('Corte enviado a la impresora.', 'success'); 
-            } else { 
-                const errText = await response.text();
-                let errorMessage = 'Error al intentar imprimir el corte.';
-                try { errorMessage = JSON.parse(errText).error; } catch(e) {}
-                
-                await customAlert(errorMessage, 'error', 'BLOQUEO DE SISTEMA'); 
-            } 
-        } catch(e) { 
-            await customAlert('Fallo de red al conectar con la impresora.', 'error'); 
-        }
-    };
-}
-
 async function loadCorteData() {
     if (corteDatePicker && !corteDatePicker.value) { corteDatePicker.value = obtenerFechaLocal(); }
     const dateVal = corteDatePicker ? corteDatePicker.value : obtenerFechaLocal();

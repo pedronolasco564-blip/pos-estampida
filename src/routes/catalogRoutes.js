@@ -29,6 +29,9 @@ router.put('/products/:id', requireAdmin, catalogController.updateProduct);
 router.put('/products/:id/toggle', requireAdmin, catalogController.toggleProduct);
 router.delete('/products/:id', requireAdmin, catalogController.deleteProduct);
 
+router.get('/ticket-config', catalogController.getTicketConfig);
+router.put('/ticket-config', requireAdmin, catalogController.saveTicketConfig);
+
 router.post('/verify-pin', pinAttemptLimiter, catalogController.verifyPinEndpoint);
 router.get('/session', requireAdmin, (req, res) => res.json({ success: true }));
 router.post('/logout', catalogController.logoutAdmin);

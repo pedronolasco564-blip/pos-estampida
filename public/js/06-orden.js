@@ -283,6 +283,7 @@ async function sendOrderToServer(shouldPrint) {
     const itemsToPrint = [...newOrderItems]; const itemsForApi = newOrderItems.map(item => ({ product_id: item.product_id, quantity: item.quantity, notes: item.notes, is_takeaway: item.is_takeaway, station: item.station, extra_price: item.extra_price }));
     await draftQueue;
     try {
+        const esAgregado = !!currentOrderId; // platillos para una mesa que ya había pedido
         let url = '/api/orders'; let bodyData = { table_id: currentTableId, waiter_name: selectedWaiter, items: itemsForApi, is_printed: shouldPrint, guests: currentPax, device_id: DEVICE_ID }; let orderNum = currentOrderId;
         if (currentOrderId) { url = `/api/orders/${currentOrderId}/items`; bodyData = { items: itemsForApi, is_printed: shouldPrint, device_id: DEVICE_ID }; }
         const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyData) }); const result = await response.json();
@@ -291,7 +292,7 @@ async function sendOrderToServer(shouldPrint) {
             closeMobileSheet();
             if (!orderNum) orderNum = result.orderId; 
             const folioComanda = result.folio || currentFolio || `#${orderNum}`;
-            if (shouldPrint) { showComanda(itemsToPrint, folioComanda, currentTableSpan.textContent, selectedWaiter); } 
+            if (shouldPrint) { showComanda(itemsToPrint, folioComanda, currentTableSpan.textContent, selectedWaiter, esAgregado); } 
             else { await customAlert('Adición registrada.', 'success'); } 
             selectTable({ id: currentTableId, table_number: currentTableSpan.textContent, status: 'OCUPADA' }); loadTables(); 
         }
@@ -307,29 +308,13 @@ async function sendOrderToServer(shouldPrint) {
 
 btnSendPrint.onclick = () => sendOrderToServer(true); btnSendSave.onclick = () => sendOrderToServer(false);
 
-function showComanda(items, folio, mesa, mesero) {
-    let time = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
-    
-    let encabezadoHTML = mesa.toUpperCase().includes('LLEVAR')
-        ? `<div style="background: #000; color: #fff; text-align: center; padding: 6px; font-size: 16px; font-weight: 900; border: 2px dashed #000; margin-bottom: 10px;">¡PEDIDO PARA LLEVAR!</div><div style="display: flex; justify-content: space-between; font-weight: bold;"><span>COMANDA ${escapeHtml(folio)}</span><span>${mesa}</span></div>`
-        : `<div style="display: flex; justify-content: space-between; font-weight: bold;"><span>COMANDA ${escapeHtml(folio)}</span><span>MESA ${mesa}</span></div>`;
+function showComanda(items, folio, mesa, mesero, esAgregado = false) {
+    document.getElementById('ticket-content').innerHTML = buildComandaHTML(items, folio, mesa, mesero, esAgregado);
+    isReprinting = true;
 
-    const itemsCocina = items.filter(item => item.station === 'COCINA'); const itemsBarra = items.filter(item => item.station === 'BARRA');
-    
-    // Ajustado al formato estricto de 80mm de tu sistema
-    let html = `<div style="width: 100%; max-width: 300px; margin: 0 auto; font-family: 'Courier New', Courier, monospace; color: #000;"><div style="border: 2px dashed #000; padding: 15px;"><p style="text-align: center; font-weight: bold; margin: 0 0 10px 0;">================================</p>${encabezadoHTML}<div style="display: flex; justify-content: space-between; margin-top:5px;"><span>MESERO: ${mesero.toUpperCase()}</span><span>${time}</span></div><p style="text-align: center; margin: 10px 0;">--------------------------------</p>`;
-    
-    if (itemsCocina.length > 0) { html += `<p style="font-weight: bold; text-decoration: underline; font-size: 16px; margin: 10px 0 5px 0;">COCINA</p>`; itemsCocina.forEach(item => { const takeaway = item.is_takeaway ? ' (LLEVAR)' : ''; html += `<p style="margin: 3px 0; font-weight: bold; font-size: 14px;">${item.quantity}x ${item.name.toUpperCase()}${takeaway}</p>`; if (item.notes) { html += `<p style="margin: 0 0 5px 20px; font-style: italic; font-size: 12px;">- ${item.notes.toUpperCase()}</p>`; } }); }
-    if (itemsBarra.length > 0) { html += `<p style="font-weight: bold; text-decoration: underline; font-size: 16px; margin: 15px 0 5px 0;">BARRA</p>`; itemsBarra.forEach(item => { const takeaway = item.is_takeaway ? ' (LLEVAR)' : ''; html += `<p style="margin: 3px 0; font-weight: bold; font-size: 14px;">${item.quantity}x ${item.name.toUpperCase()}${takeaway}</p>`; if (item.notes) { html += `<p style="margin: 0 0 5px 20px; font-style: italic; font-size: 12px;">- ${item.notes.toUpperCase()}</p>`; } }); }
-    html += `<p style="text-align: center; font-weight: bold; margin: 10px 0 0 0;">================================</p></div></div>`;
-    
-    // Usamos tu contenedor central para imprimir
-    document.getElementById('ticket-content').innerHTML = html;
-    isReprinting = true; 
-    
     // Disparamos la impresión silenciosa directo a la Epson
     setTimeout(() => {
-        printTicket(); 
+        printTicket();
         customAlert('Comanda enviada a cocina', 'success', '¡Listo!');
     }, 500);
 }

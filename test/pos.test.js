@@ -266,37 +266,6 @@ describe('Endpoints de API REST - Integración HTTP', () => {
     });
 });
 
-describe('Servicio de Impresión y Cola de Tareas', () => {
-    const printerService = require('../src/services/printerService');
-
-    test('printerService expone todas las funciones esperadas', () => {
-        assert.equal(typeof printerService.printComanda, 'function');
-        assert.equal(typeof printerService.printTicket, 'function');
-        assert.equal(typeof printerService.printAdicion, 'function');
-        assert.equal(typeof printerService.printCorteZ, 'function');
-    });
-
-    test('enqueuePrint procesa múltiples impresiones concurrentes sin arrojar errores', async () => {
-        const dummySummary = {
-            num_tickets: 1,
-            total_general: 100,
-            total_efectivo: 100,
-            total_tarjeta: 0,
-            total_gastos: 0,
-            total_comedor: 100,
-            total_llevar: 0,
-            ventas_por_mesero: { 'Pedro': { total: 100, tickets: 1 } }
-        };
-
-        // Encolar dos llamadas concurrentes
-        const p1 = printerService.printCorteZ('2026-09-21', dummySummary);
-        const p2 = printerService.printTicket(999999, 'EFECTIVO', 100);
-
-        await Promise.all([p1, p2]);
-        assert.ok(true, 'Las impresiones concurrentes deben resolverse limpiamente');
-    });
-});
-
 describe('Módulo de Gastos y Auditoría', () => {
     let createdExpenseId = null;
     function getLocalDateString() {
@@ -718,5 +687,25 @@ describe('Dinero exacto, migraciones y respaldos', () => {
         const n = await new Promise((res, rej) => copia.get('SELECT COUNT(*) AS n FROM orders', (e, r) => (e ? rej(e) : res(r.n))));
         copia.close();
         assert.equal(n, (await dbGet('SELECT COUNT(*) AS n FROM orders')).n);
+    });
+});
+
+describe('Tickets: WhatsApp de facturación y corte', () => {
+    const json = (method, body, headers = {}) => ({ method, headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+
+    test('El número de WhatsApp tiene un valor inicial y solo el administrador lo cambia', async () => {
+        const inicial = await (await fetch(`${testBaseUrl}/api/catalog/ticket-config`)).json();
+        assert.ok(inicial.whatsapp);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/ticket-config`, json('PUT', { whatsapp: '287 000 1111' }, { Authorization: '' }))).status, 401);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/ticket-config`, json('PUT', { whatsapp: 'abc' }))).status, 400);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/ticket-config`, json('PUT', { whatsapp: '287 000 1111' }))).status, 200);
+        assert.equal((await (await fetch(`${testBaseUrl}/api/catalog/ticket-config`)).json()).whatsapp, '287 000 1111');
+        await fetch(`${testBaseUrl}/api/catalog/ticket-config`, json('PUT', { whatsapp: inicial.whatsapp }));
+    });
+
+    test('El corte avisa cuántas mesas siguen abiertas', async () => {
+        const today = (await dbGet(`SELECT date('now', '-6 hours') AS d`)).d;
+        const corte = await (await fetch(`${testBaseUrl}/api/reports/corte?date=${today}`)).json();
+        assert.equal(typeof corte.open_tables, 'number');
     });
 });

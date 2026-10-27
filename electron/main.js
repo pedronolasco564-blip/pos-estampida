@@ -88,22 +88,74 @@ async function resolveTicketPrinter() {
     return { name: null, how: 'ninguna' };
 }
 
-// Los tickets se imprimen en una ventana oculta aparte: el ticket no depende de lo que haga la caja mientras tanto.
-ipcMain.handle('print-ticket', async (event, html) => {
-    if (typeof html !== 'string' || html.length > 500000) return { ok: false, reason: 'Ticket inválido' };
-    const printer = await resolveTicketPrinter();
-    if (!printer.name) return { ok: false, reason: 'No hay impresoras instaladas en Windows' };
+// Impresora de hojas carta (corte y reportes): la elegida; si no, la predeterminada de Windows si no es la de tickets;
+// si no, cualquier otra impresora real. Nunca la de tickets ni las virtuales (PDF, XPS, OneNote, Fax).
+const VIRTUAL_PRINTER = /pdf|xps|onenote|fax/i;
+async function resolveReportPrinter() {
+    const printers = mainWindow ? await mainWindow.webContents.getPrintersAsync() : [];
+    const ticket = (await resolveTicketPrinter()).name;
+    const chosen = readConfig().reportPrinter;
+    if (chosen && printers.some(p => p.name === chosen)) return { name: chosen, how: 'elegida' };
+    const usable = printers.filter(p => p.name !== ticket && !VIRTUAL_PRINTER.test(p.name));
+    const def = usable.find(p => p.isDefault);
+    if (def) return { name: def.name, how: 'predeterminada' };
+    if (usable.length) return { name: usable[0].name, how: 'detectada' };
+    return { name: null, how: 'ninguna' };
+}
+
+// Imprime HTML en una ventana oculta aparte (sin JavaScript): no depende de lo que haga la caja mientras tanto.
+async function printHtml(html, options) {
     const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } });
     try {
         await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
         return await new Promise((resolve) => {
-            win.webContents.print({ silent: true, deviceName: printer.name, printBackground: false, margins: { marginType: 'none' } },
-                (ok, reason) => resolve({ ok, reason: ok ? null : `${reason || 'error'} (${printer.name})` }));
+            win.webContents.print({ silent: true, printBackground: false, ...options },
+                (ok, reason) => resolve({ ok, reason: ok ? null : `${reason || 'error'} (${options.deviceName})` }));
         });
     } catch (e) {
         return { ok: false, reason: e.message };
     } finally {
         setTimeout(() => { if (!win.isDestroyed()) win.destroy(); }, 1000);
+    }
+}
+
+// Ticket térmico: el papel mide 80 mm y el largo es el del contenido (la página lo mide antes de enviarlo),
+// así la impresora corta justo al terminar y no avanza papel en blanco.
+ipcMain.handle('print-ticket', async (event, html, opts = {}) => {
+    if (typeof html !== 'string' || html.length > 500000) return { ok: false, reason: 'Ticket inválido' };
+    const printer = await resolveTicketPrinter();
+    if (!printer.name) return { ok: false, reason: 'No hay impresoras instaladas en Windows' };
+    const heightMm = Number(opts.heightMm);
+    const pageSize = heightMm >= 20 && heightMm <= 3000 ? { width: 80000, height: Math.ceil(heightMm * 1000) } : undefined;
+    return printHtml(html, { deviceName: printer.name, margins: { marginType: 'none' }, ...(pageSize ? { pageSize } : {}) });
+});
+
+// Corte y reportes en hoja carta, en la impresora de hojas (nunca en la de tickets).
+ipcMain.handle('print-report', async (event, html) => {
+    if (typeof html !== 'string' || html.length > 2000000) return { ok: false, reason: 'Reporte inválido' };
+    const printer = await resolveReportPrinter();
+    if (!printer.name) return { ok: false, reason: 'No hay impresora de hojas. Elígela en el icono del POS junto al reloj → Impresora de hojas (carta).' };
+    return printHtml(html, { deviceName: printer.name, pageSize: 'Letter', margins: { marginType: 'default' } });
+});
+
+// Guardar el reporte como PDF (en Documentos\Cortes La Estampida) y mostrarlo en su carpeta.
+ipcMain.handle('save-report-pdf', async (event, html, fileName) => {
+    if (typeof html !== 'string' || html.length > 2000000) return { ok: false, reason: 'Reporte inválido' };
+    const safeName = String(fileName || 'Reporte').replace(/[^\w\- ]+/g, '_').slice(0, 80) + '.pdf';
+    const dir = path.join(app.getPath('documents'), 'Cortes La Estampida');
+    const win = new BrowserWindow({ show: false, webPreferences: { sandbox: true, javascript: false } });
+    try {
+        await win.loadURL('data:text/html;charset=utf-8,' + encodeURIComponent(html));
+        const pdf = await win.webContents.printToPDF({ pageSize: 'Letter', printBackground: true });
+        fs.mkdirSync(dir, { recursive: true });
+        const dest = path.join(dir, safeName);
+        fs.writeFileSync(dest, pdf);
+        shell.showItemInFolder(dest);
+        return { ok: true, path: dest };
+    } catch (e) {
+        return { ok: false, reason: e.message };
+    } finally {
+        if (!win.isDestroyed()) win.destroy();
     }
 });
 
@@ -142,12 +194,15 @@ async function buildTrayMenu() {
     let printers = [];
     try { printers = await mainWindow.webContents.getPrintersAsync(); } catch (_) {}
     const current = (await resolveTicketPrinter()).name;
-    const printerItems = printers.length
+    const currentReport = (await resolveReportPrinter()).name;
+    const printerList = (key, selected) => printers.length
         ? printers.map(p => ({
-            label: p.name, type: 'radio', checked: p.name === current,
-            click: () => { writeConfig({ ...readConfig(), ticketPrinter: p.name }); buildTrayMenu(); }
+            label: p.name, type: 'radio', checked: p.name === selected,
+            click: () => { writeConfig({ ...readConfig(), [key]: p.name }); buildTrayMenu(); }
         }))
         : [{ label: 'No hay impresoras en Windows', enabled: false }];
+    const printerItems = printerList('ticketPrinter', current);
+    const reportItems = printerList('reportPrinter', currentReport);
     const updateItems = pendingUpdate
         ? [{ label: `⬆️ Instalar actualización v${pendingUpdate.version} (reinicia el POS)`, click: confirmInstallUpdate }, { type: 'separator' }]
         : [];
@@ -157,6 +212,7 @@ async function buildTrayMenu() {
         { label: 'Dirección para celulares', click: showPhoneAddress },
         { label: 'Diagnóstico', click: showDiagnostics },
         { label: 'Impresora de tickets', submenu: [...printerItems, { type: 'separator' }, { label: 'Actualizar lista', click: buildTrayMenu }] },
+        { label: 'Impresora de hojas (carta)', submenu: [...reportItems, { type: 'separator' }, { label: 'Actualizar lista', click: buildTrayMenu }] },
         { label: 'Abrir carpeta de respaldos', click: () => shell.openPath(path.join(app.getPath('userData'), 'respaldos')) },
         { type: 'separator' },
         { label: 'Salir (desconecta a los meseros)', click: confirmQuit }
@@ -204,9 +260,8 @@ async function showDiagnostics() {
         const def = printers.find(p => p.isDefault);
         lines.push(`Impresora predeterminada de Windows: ${def ? def.name : 'ninguna'}`);
         lines.push(`Impresoras en Windows: ${printers.map(p => p.name).join(', ') || 'ninguna'}`);
-        const esc = process.env.POS_PRINTER || '//localhost/CajaEstampida';
-        const shared = esc.split('/').pop();
-        lines.push(`Impresora de comandas (ESC/POS) "${shared}": ${printers.some(p => p.name === shared) ? 'encontrada' : 'NO encontrada en Windows'}`);
+        const report = await resolveReportPrinter();
+        lines.push(`Impresora de hojas (corte): ${report.name ? `${report.name} (${report.how})` : 'NINGUNA (el corte no saldrá impreso)'}`);
     } catch (e) { lines.push(`Impresoras: error (${e.message})`); }
     dialog.showMessageBox(mainWindow, { type: 'info', title: 'Diagnóstico', buttons: ['Cerrar'], message: 'Diagnóstico del sistema', detail: lines.join('\n') });
 }

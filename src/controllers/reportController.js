@@ -7,13 +7,6 @@ const { calculateCorteData } = require('../services/reportService');
 const cashService = require('../services/cashService');
 const { emitUpdate } = require('../utils/emitUpdate');
 
-let printerService = null;
-try {
-    printerService = require('../services/printerService');
-} catch (e) {
-    console.log("Aviso: Módulo de impresora no cargado.");
-}
-
 const getCorte = async (req, res) => {
     try {
         const targetDate = req.query.date;
@@ -22,41 +15,14 @@ const getCorte = async (req, res) => {
         }
 
         const { summary, orders } = await calculateCorteData(targetDate);
+        // Mesas aún sin cobrar: el reporte impreso avisa que no están incluidas
+        const openRow = await dbGet(`SELECT COUNT(*) AS n FROM tables WHERE status = 'OCUPADA'`);
         res.json({
             date: targetDate,
             summary,
-            orders
+            orders,
+            open_tables: openRow ? openRow.n : 0
         });
-    } catch (err) {
-        console.error('[ReportController]', err);
-        res.status(500).json({ error: 'Error interno del servidor.' });
-    }
-};
-
-const printCorte = async (req, res) => {
-    try {
-        const targetDate = req.query.date;
-        if (!targetDate) {
-            return res.status(400).json({ error: 'Fecha requerida para el corte.' });
-        }
-
-        const openTablesRow = await dbGet(`SELECT COUNT(*) as open_tables FROM tables WHERE status = 'OCUPADA'`);
-        const openTables = openTablesRow ? openTablesRow.open_tables : 0;
-        if (openTables > 0) {
-            return res.status(400).json({
-                error: `CORTE BLOQUEADO. Aún tienes ${openTables} mesa(s) abierta(s) o sin cobrar en el piso.`
-            });
-        }
-
-        const { summary } = await calculateCorteData(targetDate);
-
-        if (printerService && printerService.printCorteZ) {
-            printerService.printCorteZ(targetDate, summary);
-        } else {
-            console.log(`\n[ 🖨️ CORTE IMPRESO: Ventas $${summary.total_general}, Gastos $${summary.total_gastos} ]\n`);
-        }
-
-        res.json({ message: 'Corte enviado a impresión' });
     } catch (err) {
         console.error('[ReportController]', err);
         res.status(500).json({ error: 'Error interno del servidor.' });
@@ -284,7 +250,6 @@ module.exports = {
     getMonthlyExcel,
     getBackupStatus,
     getCorte,
-    printCorte,
     backupDatabase,
     getFondo,
     setFondo,

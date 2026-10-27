@@ -393,7 +393,37 @@ const changePin = async (req, res) => {
     }
 };
 
+// ========================================================
+// DATOS DE LOS TICKETS (WhatsApp para facturación)
+// ========================================================
+const DEFAULT_WHATSAPP = '287 134 7643';
+
+const getTicketConfig = async (req, res) => {
+    try {
+        const row = await dbGet(`SELECT value FROM settings WHERE key = 'whatsapp_factura'`);
+        res.json({ whatsapp: row ? row.value : DEFAULT_WHATSAPP });
+    } catch (err) {
+        console.error('[CatalogController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+const saveTicketConfig = async (req, res) => {
+    try {
+        const whatsapp = String(req.body.whatsapp || '').trim();
+        if (!/^[\d +()-]{7,20}$/.test(whatsapp)) return res.status(400).json({ error: 'Número de WhatsApp inválido.' });
+        await dbRun(`INSERT OR REPLACE INTO settings (key, value) VALUES ('whatsapp_factura', ?)`, [whatsapp]);
+        emitUpdate(req, 'update-products');
+        res.json({ message: 'Guardado', whatsapp });
+    } catch (err) {
+        console.error('[CatalogController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
 module.exports = {
+    getTicketConfig,
+    saveTicketConfig,
     logoutAdmin,
     getTables,
     createTable,

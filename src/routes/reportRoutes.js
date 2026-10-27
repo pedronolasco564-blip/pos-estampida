@@ -8,7 +8,6 @@ const { pinAttemptLimiter } = require('../middleware/verifyPin');
 router.use(requireAdmin);
 
 router.get('/corte', reportController.getCorte);
-router.post('/corte/print', reportController.printCorte);
 router.post('/backup', pinAttemptLimiter, reportController.backupDatabase);
 router.post('/expenses', reportController.addExpense);
 router.post('/expenses/:id/delete', pinAttemptLimiter, reportController.deleteExpense);
