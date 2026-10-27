@@ -1635,3 +1635,12 @@ body.admin-mode #btn-close-audit { display: none !important; }
 .summary-metric .metric-note .dif-bad { color: var(--color-danger); }
 .summary-metric .metric-note .dif-warn { color: var(--color-warning); }
 .summary-metric .metric-note .dif-ok { color: var(--color-success); }
+
+/* Lista editable de categorías */
+.admin-cat-list { display: flex; flex-direction: column; gap: 6px; margin-top: 14px; max-height: 320px; overflow-y: auto; }
+.admin-cat-row { display: flex; align-items: center; gap: 6px; background: #2c2c2c; border: 1px solid #444; border-radius: 6px; padding: 6px 8px; }
+.admin-cat-name { flex: 1; min-width: 0; font-weight: 700; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.admin-cat-count { color: #95a5a6; font-size: 11px; font-weight: 600; margin-left: 6px; }
+.admin-cat-row button { background: #3a3a3a; color: #ecf0f1; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
+.admin-cat-row button:disabled { opacity: 0.3; cursor: default; }
+.admin-cat-row button.cat-del { background: #c0392b; border-color: #c0392b; color: #fff; }

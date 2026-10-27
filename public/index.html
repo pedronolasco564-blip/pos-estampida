@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Asadero La Estampida - POS</title>
-    <link rel="stylesheet" href="style.css?v=6">
+    <link rel="stylesheet" href="style.css?v=7">
     <link rel="icon" type="image/jpeg" href="logo.jpg">
     <style>
         @media print {
@@ -419,9 +419,10 @@
                     </form>
                     </div>
                     <div class="admin-box">
-                        <h3 class="admin-box-title">Nueva categoría</h3>
-                        <p class="admin-hint">Las categorías agrupan los platillos en la pantalla de la caja.</p>
+                        <h3 class="admin-box-title">Categorías</h3>
+                        <p class="admin-hint">Agrupan los platillos en la caja, en el orden de esta lista. Usa ▲ ▼ para moverlas.</p>
                         <form id="category-form" style="display: flex; gap: 8px;"><input type="text" id="new-category-name" placeholder="Nueva Categoría" required style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
+                        <div id="admin-categories-list" class="admin-cat-list"></div>
                     </div>
                 </div>
                 <h3 class="admin-section-title">Catálogo de platillos</h3>

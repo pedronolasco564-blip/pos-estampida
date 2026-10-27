@@ -65,6 +65,10 @@ function initDatabase() {
         db.run(`CREATE TABLE IF NOT EXISTS order_drafts (table_id INTEGER PRIMARY KEY, items TEXT NOT NULL, waiter_name TEXT, updated_at DATETIME DEFAULT CURRENT_TIMESTAMP, FOREIGN KEY (table_id) REFERENCES tables(id))`);
 
         db.run(`ALTER TABLE modifiers ADD COLUMN price REAL DEFAULT 0`, () => {});
+        // Orden en que aparecen las categorías en la caja (las existentes conservan su orden de creación)
+        db.run(`ALTER TABLE categories ADD COLUMN sort_order INTEGER`, () => {
+            db.run(`UPDATE categories SET sort_order = id WHERE sort_order IS NULL`);
+        });
         db.run(`ALTER TABLE order_items ADD COLUMN extra_price REAL DEFAULT 0`, () => {});
         db.run(`ALTER TABLE orders ADD COLUMN needs_invoice INTEGER DEFAULT 0`, () => {});
         db.run(`ALTER TABLE orders ADD COLUMN invoice_done INTEGER DEFAULT 0`, () => {});

@@ -1,4 +1,4 @@
-const { dbGet, dbAll, dbRun } = require('../utils/dbHelper');
+const { dbGet, dbAll, dbRun, dbTransaction } = require('../utils/dbHelper');
 const { emitUpdate } = require('../utils/emitUpdate');
 const { folioSql } = require('../utils/folio');
 const { verifyAdminPin, hashPin } = require('../middleware/verifyPin');
@@ -82,7 +82,9 @@ const deleteTable = async (req, res) => {
 // ========================================================
 const getCategories = async (req, res) => {
     try {
-        const categories = await dbAll(`SELECT * FROM categories`);
+        const categories = await dbAll(`
+            SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category = c.name) AS product_count
+            FROM categories c ORDER BY c.sort_order, c.id`);
         res.json({ categories });
     } catch (err) {
         console.error('[CatalogController]', err);
@@ -95,12 +97,72 @@ const createCategory = async (req, res) => {
         const { name } = req.body;
         if (!name) return res.status(400).json({ error: 'Nombre de categoría requerido.' });
 
-        await dbRun(`INSERT INTO categories (name) VALUES (?)`, [String(name).trim()]);
+        await dbRun(`INSERT INTO categories (name, sort_order) VALUES (?, (SELECT COALESCE(MAX(sort_order), 0) + 1 FROM categories))`, [String(name).trim()]);
+        emitUpdate(req, 'update-products');
         res.json({ message: 'Categoría creada' });
     } catch (err) {
         if (err.message.includes('UNIQUE')) {
             return res.status(400).json({ error: 'La categoría ya existe.' });
         }
+        console.error('[CatalogController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+// Renombrar: los platillos de la categoría pasan al nombre nuevo.
+const renameCategory = async (req, res) => {
+    try {
+        const name = String(req.body.name || '').trim();
+        if (!name) return res.status(400).json({ error: 'Nombre de categoría requerido.' });
+        const cat = await dbGet(`SELECT * FROM categories WHERE id = ?`, [req.params.id]);
+        if (!cat) return res.status(404).json({ error: 'Categoría no encontrada.' });
+
+        await dbTransaction(async () => {
+            await dbRun(`UPDATE categories SET name = ? WHERE id = ?`, [name, cat.id]);
+            await dbRun(`UPDATE products SET category = ? WHERE category = ?`, [name, cat.name]);
+        });
+        emitUpdate(req, 'update-products');
+        res.json({ message: 'Categoría actualizada' });
+    } catch (err) {
+        if (err.message.includes('UNIQUE')) {
+            return res.status(400).json({ error: 'Ya existe una categoría con ese nombre.' });
+        }
+        console.error('[CatalogController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+// Solo se borra si está vacía, para no dejar platillos sin categoría.
+const deleteCategory = async (req, res) => {
+    try {
+        const cat = await dbGet(`SELECT * FROM categories WHERE id = ?`, [req.params.id]);
+        if (!cat) return res.status(404).json({ error: 'Categoría no encontrada.' });
+        const { n } = await dbGet(`SELECT COUNT(*) AS n FROM products WHERE category = ?`, [cat.name]);
+        if (n > 0) {
+            return res.status(400).json({ error: `La categoría ${cat.name} tiene ${n} platillo(s). Cámbialos de categoría o bórralos primero.` });
+        }
+        await dbRun(`DELETE FROM categories WHERE id = ?`, [cat.id]);
+        emitUpdate(req, 'update-products');
+        res.json({ message: 'Categoría eliminada' });
+    } catch (err) {
+        console.error('[CatalogController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
+// Recibe los ids en el orden deseado.
+const reorderCategories = async (req, res) => {
+    try {
+        const ids = Array.isArray(req.body.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+        if (!ids.length) return res.status(400).json({ error: 'Orden inválido.' });
+        await dbTransaction(async () => {
+            for (let i = 0; i < ids.length; i++) {
+                await dbRun(`UPDATE categories SET sort_order = ? WHERE id = ?`, [i + 1, ids[i]]);
+            }
+        });
+        emitUpdate(req, 'update-products');
+        res.json({ message: 'Orden guardado' });
+    } catch (err) {
         console.error('[CatalogController]', err);
         res.status(500).json({ error: 'Error interno del servidor.' });
     }
@@ -337,6 +399,9 @@ module.exports = {
     deleteTable,
     getCategories,
     createCategory,
+    renameCategory,
+    deleteCategory,
+    reorderCategories,
     getWaiters,
     createWaiter,
     deleteWaiter,

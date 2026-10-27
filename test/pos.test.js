@@ -587,3 +587,60 @@ describe('Folios separados: comedor (#N) y para llevar (LL-0001)', () => {
         assert.equal(Number(siguiente.folio.slice(3)), Number(c.folio.slice(3)) + 1);
     });
 });
+
+describe('Categorías editables', () => {
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const stamp = Date.now();
+    const A = `CAT_A_${stamp}`, B = `CAT_B_${stamp}`, A2 = `CAT_A2_${stamp}`;
+    const lista = async () => (await (await fetch(`${testBaseUrl}/api/catalog/categories`)).json()).categories;
+    const buscar = async (name) => (await lista()).find(c => c.name === name);
+    let productId;
+
+    before(async () => {
+        await fetch(`${testBaseUrl}/api/catalog/categories`, json('POST', { name: A }));
+        await fetch(`${testBaseUrl}/api/catalog/categories`, json('POST', { name: B }));
+        productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Plat cat', 10, 'COCINA', ?)`, [A])).lastID;
+    });
+
+    after(async () => {
+        await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+        await dbRun('DELETE FROM categories WHERE name IN (?, ?, ?)', [A, B, A2]);
+    });
+
+    test('Las nuevas van al final y se reportan con su número de platillos', async () => {
+        const cats = await lista();
+        assert.equal(cats[cats.length - 1].name, B);
+        assert.equal((await buscar(A)).product_count, 1);
+    });
+
+    test('Renombrar mueve sus platillos al nombre nuevo y rechaza duplicados', async () => {
+        const a = await buscar(A);
+        const dup = await fetch(`${testBaseUrl}/api/catalog/categories/${a.id}`, json('PUT', { name: B }));
+        assert.equal(dup.status, 400);
+        const ok = await fetch(`${testBaseUrl}/api/catalog/categories/${a.id}`, json('PUT', { name: A2 }));
+        assert.equal(ok.status, 200);
+        assert.equal((await dbGet('SELECT category FROM products WHERE id = ?', [productId])).category, A2);
+    });
+
+    test('No se borra una categoría con platillos; vacía sí', async () => {
+        const a2 = await buscar(A2);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/categories/${a2.id}`, { method: 'DELETE' })).status, 400);
+        const b = await buscar(B);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/categories/${b.id}`, { method: 'DELETE' })).status, 200);
+        assert.equal(await buscar(B), undefined);
+    });
+
+    test('Reordenar cambia el orden de la lista', async () => {
+        const ids = (await lista()).map(c => c.id).reverse();
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/categories/order`, json('PUT', { ids }))).status, 200);
+        assert.deepEqual((await lista()).map(c => c.id), ids);
+    });
+
+    test('Sin sesión de administrador no se pueden modificar', async () => {
+        const a2 = await buscar(A2);
+        const sinToken = { 'Content-Type': 'application/json', Authorization: '' };
+        const res = await fetch(`${testBaseUrl}/api/catalog/categories/${a2.id}`, { method: 'PUT', headers: sinToken, body: JSON.stringify({ name: 'X' }) });
+        assert.equal(res.status, 401);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/categories/${a2.id}`, { method: 'DELETE', headers: { Authorization: '' } })).status, 401);
+    });
+});

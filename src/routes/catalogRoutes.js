@@ -11,6 +11,9 @@ router.delete('/tables/:id', requireAdmin, catalogController.deleteTable);
 
 router.get('/categories', catalogController.getCategories);
 router.post('/categories', requireAdmin, catalogController.createCategory);
+router.put('/categories/order', requireAdmin, catalogController.reorderCategories);
+router.put('/categories/:id', requireAdmin, catalogController.renameCategory);
+router.delete('/categories/:id', requireAdmin, catalogController.deleteCategory);
 
 router.get('/waiters', catalogController.getWaiters);
 router.post('/waiters', requireAdmin, catalogController.createWaiter);

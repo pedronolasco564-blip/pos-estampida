@@ -396,7 +396,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isAdminSessionActive && btnMasterAdmin) { btnMasterAdmin.innerHTML = '👑 Volver al Panel (Desbloqueado)'; btnMasterAdmin.style.backgroundColor = '#d35400'; }
     setView(currentViewId);
     if(currentViewId === 'corte-view') loadCorteData();
-    if(currentViewId === 'admin-view') { switchAdminTab(getAdminTab()); loadAdminProducts(); loadWaiters(); loadModifiers(); }
+    if(currentViewId === 'admin-view') { switchAdminTab(getAdminTab()); loadAdminProducts(); loadCategories(); loadWaiters(); loadModifiers(); }
     if(currentViewId === 'audit-view') loadFullAuditLogs();
     if(currentViewId === 'report-view') loadMonthlyReport();
 });
@@ -626,7 +626,7 @@ window.loadDashboard = async function() {
 };
 window.openSubAdmin = async function(section) {
     if (section === 'corte') { setView('corte-view'); loadCorteData(); } 
-    else if (section === 'menu') { setView('admin-view'); switchAdminTab(getAdminTab()); loadAdminProducts(); loadWaiters(); loadModifiers(); } 
+    else if (section === 'menu') { setView('admin-view'); switchAdminTab(getAdminTab()); loadAdminProducts(); loadCategories(); loadWaiters(); loadModifiers(); }
     else if (section === 'audit') { setView('audit-view'); loadFullAuditLogs(); }
 };
 
@@ -672,10 +672,13 @@ async function loadFullAuditLogs() {
 
 async function loadModifiers() { try { const response = await fetch('/api/catalog/modifiers'); const data = await response.json(); currentModifiers = data.modifiers; const adminModifiersList = document.getElementById('admin-modifiers-list'); if (adminModifiersList) { adminModifiersList.innerHTML = ''; currentModifiers.forEach(m => { const displayPrice = m.price > 0 ? ` (+$${m.price})` : ''; adminModifiersList.innerHTML += `<span style="background: #2c2c2c; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: bold;">${m.name}${displayPrice} <button onclick="deleteModifier(${m.id})" style="background: #c39bd3; color: white; border: none; border-radius: 3px; padding: 2px 6px; cursor: pointer;">✕</button></span>`; }); } } catch (error) { console.error('Error:', error); } }
 
-async function loadCategories() { 
-    try { 
-        const response = await fetch('/api/catalog/categories'); 
-        const data = await response.json(); 
+let currentCategories = [];
+async function loadCategories() {
+    try {
+        const response = await fetch('/api/catalog/categories');
+        const data = await response.json();
+        currentCategories = data.categories || [];
+        renderAdminCategories();
         const tabsContainer = document.getElementById('category-tabs'); 
         if (tabsContainer) { 
             tabsContainer.innerHTML = `<button class="btn-category" onclick="filterCategory('TOP', this)" style="border-color: #e74c3c; color: #e74c3c;">⭐ </button>`;
@@ -689,6 +692,65 @@ async function loadCategories() {
         } 
     } catch (error) { console.error('Error:', error); } 
 }
+
+function renderAdminCategories() {
+    const list = document.getElementById('admin-categories-list');
+    if (!list) return;
+    const last = currentCategories.length - 1;
+    list.innerHTML = currentCategories.map((c, i) => `
+        <div class="admin-cat-row">
+            <span class="admin-cat-name">${escapeHtml(c.name)}<span class="admin-cat-count">${c.product_count} platillo${c.product_count === 1 ? '' : 's'}</span></span>
+            <button title="Subir" onclick="moveCategory(${i}, -1)" ${i === 0 ? 'disabled' : ''}>▲</button>
+            <button title="Bajar" onclick="moveCategory(${i}, 1)" ${i === last ? 'disabled' : ''}>▼</button>
+            <button title="Renombrar" onclick="renameCategory(${c.id})">✏️</button>
+            <button title="Eliminar" class="cat-del" onclick="deleteCategory(${c.id})">✕</button>
+        </div>`).join('') || '<p class="admin-hint">Aún no hay categorías.</p>';
+}
+
+window.moveCategory = async function(index, dir) {
+    const target = index + dir;
+    if (target < 0 || target >= currentCategories.length) return;
+    const ids = currentCategories.map(c => c.id);
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    try {
+        const response = await fetch('/api/catalog/categories/order', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }) });
+        if (!response.ok) await customAlert('No se pudo cambiar el orden', 'error');
+        loadCategories();
+    } catch (e) { await customAlert('Error de red al ordenar categorías', 'error'); }
+};
+
+window.renameCategory = async function(id) {
+    const c = currentCategories.find(x => x.id === id);
+    if (!c) return;
+    const name = await customPrompt(`Nuevo nombre para ${c.name}. Sus ${c.product_count} platillo(s) se moverán solos.`, 'text', c.name, 'Renombrar categoría');
+    if (!name || !name.trim() || name.trim() === c.name) return;
+    try {
+        const response = await fetch(`/api/catalog/categories/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: name.trim() }) });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al renombrar', 'error');
+        }
+        loadCategories(); loadProducts(); loadAdminProducts();
+    } catch (e) { await customAlert('Error de red al renombrar categoría', 'error'); }
+};
+
+window.deleteCategory = async function(id) {
+    const c = currentCategories.find(x => x.id === id);
+    if (!c) return;
+    if (c.product_count > 0) {
+        await customAlert(`${c.name} tiene ${c.product_count} platillo(s). Cámbialos de categoría con "Editar" o bórralos primero.`, 'warning');
+        return;
+    }
+    if (!(await customConfirm(`¿Eliminar la categoría ${c.name}?`))) return;
+    try {
+        const response = await fetch(`/api/catalog/categories/${id}`, { method: 'DELETE' });
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            await customAlert(err.error || 'Error al eliminar', 'error');
+        }
+        loadCategories();
+    } catch (e) { await customAlert('Error de red al eliminar categoría', 'error'); }
+};
 
 function displayProducts(productsToDisplay) { 
     menuGrid.innerHTML = ''; 
@@ -1731,7 +1793,7 @@ async function loadAdminProducts() {
                 ? `<button onclick="toggleProductStatus(${p.id}, 0)" style="background:#27ae60; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🟢 Disponible</button>`
                 : `<button onclick="toggleProductStatus(${p.id}, 1)" style="background:#c0392b; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🔴 Agotado</button>`;
 
-            tbody.innerHTML += `<tr><td>${p.name}</td><td>$${p.price.toFixed(2)}</td><td>${p.station}</td><td>${p.category}</td><td style="text-align: center;">${statusBtn}</td><td><button onclick="editProduct(${p.id})" class="btn-secondary" style="background-color: #f39c12; color: #1a1a1a; font-weight: 800; padding: 4px 10px; border: none;">Editar</button> <button onclick="deleteProduct(${p.id})" class="btn-secondary" style="background-color: #e74c3c; padding: 4px; border: none; color: white;">X</button></td></tr>`; 
+            tbody.innerHTML += `<tr><td>${escapeHtml(p.name)}</td><td>$${p.price.toFixed(2)}</td><td>${escapeHtml(p.station)}</td><td>${escapeHtml(p.category)}</td><td style="text-align: center;">${statusBtn}</td><td><button onclick="editProduct(${p.id})" class="btn-secondary" style="background-color: #f39c12; color: #1a1a1a; font-weight: 800; padding: 4px 10px; border: none;">Editar</button> <button onclick="deleteProduct(${p.id})" class="btn-secondary" style="background-color: #e74c3c; padding: 4px; border: none; color: white;">X</button></td></tr>`; 
         }); 
     } catch(err) {
         console.error('Error al cargar productos de admin:', err);
@@ -1884,7 +1946,7 @@ if (productForm) productForm.onsubmit = async (e) => {
         if (response.ok) {
             productForm.reset(); 
             loadAdminProducts(); 
-            loadProducts(); 
+            loadProducts(); loadCategories(); 
         } else {
             const err = await response.json().catch(() => ({}));
             await customAlert(err.error || 'Error al crear producto', 'error');
@@ -1916,17 +1978,21 @@ window.editProduct = async function(id) {
     const newName = await customPrompt("Nuevo nombre:", "text", p.name); 
     if (!newName) return; 
     await new Promise(resolve => setTimeout(resolve, 250)); 
-    const newPrice = await customPrompt("Nuevo precio:", "number", p.price); 
-    if (!newPrice || isNaN(parseFloat(newPrice))) return; 
+    const newPrice = await customPrompt("Nuevo precio:", "number", p.price);
+    if (!newPrice || isNaN(parseFloat(newPrice))) return;
+    await new Promise(resolve => setTimeout(resolve, 250));
+    const newCategory = await customSelect("Categoría:", currentCategories.map(c => c.name), p.category, 'Categoría del platillo');
+    if (!newCategory) return; 
     try {
         const response = await fetch(`/api/catalog/products/${id}`, { 
             method: 'PUT', 
             headers: { 'Content-Type': 'application/json' }, 
-            body: JSON.stringify({ name: newName.trim(), price: parseFloat(newPrice), station: p.station, category: p.category }) 
+            body: JSON.stringify({ name: newName.trim(), price: parseFloat(newPrice), station: p.station, category: newCategory }) 
         }); 
         if (response.ok) {
-            loadAdminProducts(); 
-            loadProducts(); 
+            loadAdminProducts();
+            loadProducts();
+            loadCategories();
         } else {
             const err = await response.json().catch(() => ({}));
             await customAlert(err.error || 'Error al actualizar', 'error');
@@ -2105,8 +2171,8 @@ socket.on('update-tables', () => {
     if(posView.style.display !== 'none' && navigator.onLine) loadTables(); 
     if(corteView.style.display !== 'none') loadCorteData(); 
 });
-socket.on('update-products', () => { 
-    if(posView.style.display !== 'none' && navigator.onLine) loadProducts(); 
+socket.on('update-products', () => {
+    if(posView.style.display !== 'none' && navigator.onLine) { loadProducts(); loadCategories(); }
 });
 // Otro dispositivo cambió el borrador de una mesa: si la tengo abierta, muestro lo mismo.
 socket.on('draft-updated', (data) => {
