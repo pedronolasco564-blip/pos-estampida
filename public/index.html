@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Asadero La Estampida - POS</title>
-    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="stylesheet" href="style.css?v=5">
     <link rel="icon" type="image/jpeg" href="logo.jpg">
     <style>
         @media print {
@@ -55,6 +55,18 @@
             <div id="status-bar">Conectado</div>
         </div>
     </header>
+
+    <!-- NAVEGACIÓN DEL PANEL ADMINISTRATIVO (visible solo en vistas de administración) -->
+    <nav id="admin-nav" style="display: none;" aria-label="Panel administrativo">
+        <button class="admin-nav-item" data-nav="inicio" onclick="adminNavigate('inicio')"><span class="admin-nav-icon">🏠</span><span>Inicio</span></button>
+        <button class="admin-nav-item" data-nav="caja" onclick="adminNavigate('caja')"><span class="admin-nav-icon">💻</span><span>Caja</span></button>
+        <button class="admin-nav-item" data-nav="corte" onclick="adminNavigate('corte')"><span class="admin-nav-icon">📊</span><span>Corte</span></button>
+        <button class="admin-nav-item" data-nav="menu" onclick="adminNavigate('menu')"><span class="admin-nav-icon">🥩</span><span>Menú</span></button>
+        <button class="admin-nav-item" data-nav="ajustes" onclick="adminNavigate('ajustes')"><span class="admin-nav-icon">⚙️</span><span>Ajustes</span></button>
+        <button class="admin-nav-item" data-nav="auditoria" onclick="adminNavigate('auditoria')"><span class="admin-nav-icon">🛡️</span><span>Auditoría</span></button>
+        <div class="admin-nav-spacer"></div>
+        <button class="admin-nav-item admin-nav-lock" onclick="document.getElementById('btn-exit-admin').click()"><span class="admin-nav-icon">🔒</span><span>Bloquear</span></button>
+    </nav>
 
     <!-- POS PRINCIPAL -->
     <main id="pos-view" class="pos-container" style="display: none;">
@@ -157,37 +169,57 @@
 
     <!-- HUB DE ADMINISTRACIÓN -->
     <div id="admin-hub-view" class="corte-container" style="display: none;">
-        <div class="corte-card" style="max-width: 920px; text-align: center;">
-            <h2 style="font-size: 24px; color: var(--brand-primary); margin-bottom: 24px; border: none; padding: 0;">Panel Directivo</h2>
-            <div class="admin-hub-grid">
-                
-                <div onclick="goToPOS()" class="admin-hub-card">
-                    <div class="hub-icon">💻</div>
-                    <h3>Ir a la Caja</h3>
-                    <p>Ver mesas y cobrar</p>
+        <div class="corte-card" style="max-width: 1080px;">
+            <div class="corte-header">
+                <div>
+                    <h2>Resumen del día</h2>
+                    <div id="dash-date" class="dash-subtitle"></div>
                 </div>
-
-                <div onclick="openSubAdmin('corte')" class="admin-hub-card">
-                    <div class="hub-icon">📊</div>
-                    <h3>Corte y Finanzas</h3>
-                    <p>Ventas, cobros y propinas</p>
-                </div>
-                
-                <div onclick="openSubAdmin('menu')" class="admin-hub-card">
-                    <div class="hub-icon">🥩</div>
-                    <h3>Operación de Menú</h3>
-                    <p>Platillos, precios y notas</p>
-                </div>
-                
-                <div onclick="openSubAdmin('audit')" class="admin-hub-card">
-                    <div class="hub-icon">🛡️</div>
-                    <h3>Auditoría</h3>
-                    <p>Seguridad y cancelaciones</p>
-                </div>
-
+                <button class="btn-secondary" onclick="loadDashboard()" style="padding: 10px 16px;">↻ Actualizar</button>
             </div>
-            <div style="margin-top: 36px;">
-                <button id="btn-exit-admin" style="background: rgba(239, 68, 68, 0.15); color: #f87171; border: 1px solid rgba(239, 68, 68, 0.4); padding: 12px 28px; border-radius: var(--radius-full); font-weight: 700; font-size: 14px; cursor: pointer; transition: all var(--transition-fast);"> Bloquear Panel y Salir</button>
+
+            <div class="dash-kpis">
+                <div class="summary-metric" style="border-left-color: var(--color-success);">
+                    <span>Vendido hoy</span>
+                    <h3 style="color: var(--color-success);">$<span id="dash-ventas">0.00</span></h3>
+                    <small id="dash-tickets" class="metric-note">0 tickets cerrados</small>
+                </div>
+                <div class="summary-metric" style="border-left-color: var(--color-warning);">
+                    <span>Por cobrar</span>
+                    <h3 style="color: var(--color-warning);">$<span id="dash-por-cobrar">0.00</span></h3>
+                    <small id="dash-mesas-abiertas" class="metric-note">0 mesas abiertas</small>
+                </div>
+                <div class="summary-metric" style="border-left-color: var(--color-info);">
+                    <span>Efectivo esperado en caja</span>
+                    <h3 style="color: #38bdf8;">$<span id="dash-esperado">0.00</span></h3>
+                    <small class="metric-note">Fondo + efectivo − gastos − propinas tarjeta</small>
+                </div>
+                <div id="dash-drafts-card" class="summary-metric" style="border-left-color: var(--border-subtle);">
+                    <span>Órdenes sin enviar</span>
+                    <h3><span id="dash-drafts">0</span></h3>
+                    <small class="metric-note">Mesas con platillos sin mandar a cocina</small>
+                </div>
+            </div>
+
+            <div class="dash-grid">
+                <section class="admin-box">
+                    <h3 class="admin-box-title">Mesas abiertas</h3>
+                    <div id="dash-open-tables" class="dash-list"></div>
+                </section>
+                <section class="admin-box">
+                    <h3 class="admin-box-title">Accesos rápidos</h3>
+                    <div class="dash-actions">
+                        <button class="btn-primary" onclick="adminNavigate('caja')">💻 Ir a la caja</button>
+                        <button class="btn-secondary" onclick="adminNavigate('corte')">📊 Ver corte de hoy</button>
+                        <button class="btn-secondary" onclick="adminNavigate('menu')">🥩 Agregar platillo</button>
+                    </div>
+                    <h3 class="admin-box-title" style="margin-top: 22px;">Respaldo</h3>
+                    <div id="dash-backup" class="metric-note">—</div>
+                </section>
+            </div>
+
+            <div style="margin-top: 28px; text-align: center;">
+                <button id="btn-exit-admin" class="btn-lock">🔒 Bloquear panel y salir</button>
             </div>
         </div>
     </div>
@@ -206,50 +238,61 @@
                 </div>
             </div>
 
-            <!-- Métricas Financieras Principales -->
-            <div class="corte-summary-box">
-                <div class="summary-metric" style="border-left-color: var(--color-warning);">
-                    <span>Fondo Inicial</span>
-                    <h3 style="color: var(--color-warning);">$<span id="corte-fondo">0.00</span></h3>
-                    <button onclick="configurarFondo()" style="background: transparent; border: 1px solid rgba(245, 158, 11, 0.4); color: #fbbf24; border-radius: var(--radius-sm); padding: 4px 8px; font-size: 11px; margin-top: 8px; cursor: pointer; font-weight: 700;">✏️ Editar</button>
+            <!-- Cifras clave del corte -->
+            <div class="corte-hero">
+                <div class="hero-metric" style="--accent: var(--color-success);">
+                    <span>Total vendido</span>
+                    <h3>$<span id="corte-total">0.00</span></h3>
+                    <small class="metric-note">Comedor y para llevar, todos los métodos de pago</small>
                 </div>
-                <div class="summary-metric" style="border-left-color: var(--color-success);">
-                    <span>Efectivo Vendido</span>
-                    <h3 style="color: var(--color-success);">$<span id="corte-efectivo">0.00</span></h3>
+                <div class="hero-metric hero-main" style="--accent: #38bdf8;">
+                    <span>Efectivo esperado en caja</span>
+                    <h3>$<span id="corte-esperado">0.00</span></h3>
+                    <button onclick="abrirArqueo()" class="hero-btn">🧮 Contar billetes</button>
                 </div>
-                <div class="summary-metric" style="border-left-color: var(--color-purple);">
-                    <span>Ventas Banco (Tarj/Transf)</span>
-                    <h3 style="color: #c084fc;">$<span id="corte-tarjeta">0.00</span></h3>
-                </div>
-                <div class="summary-metric" style="border-left-color: var(--color-danger);">
-                    <span>Gastos / Retiros</span>
-                    <h3 style="color: var(--color-danger);">-$<span id="corte-gastos">0.00</span></h3>
-                    <div style="display: flex; gap: 6px; margin-top: 8px;">
-                        <button onclick="abrirModalGasto()" style="flex: 1; background: var(--color-danger); color: white; border: none; border-radius: var(--radius-sm); padding: 5px; font-size: 11px; cursor: pointer; font-weight: 700;">💸 Retirar</button>
-                        <button onclick="verListaGastos()" style="flex: 1; background: var(--surface-subtle); color: var(--text-primary); border: 1px solid var(--border-subtle); border-radius: var(--radius-sm); padding: 5px; font-size: 11px; cursor: pointer; font-weight: 700;">👁️ Detalles</button>
-                    </div>
-                </div>
-                <div class="summary-metric" style="border-left-color: var(--color-info); background: #111a28;">
-                    <span>EFECTIVO ESPERADO</span>
-                    <h3 style="color: #38bdf8;">$<span id="corte-esperado">0.00</span></h3>
-                    <button onclick="abrirArqueo()" style="background: #0284c7; color: white; border: none; border-radius: var(--radius-sm); padding: 5px 8px; font-size: 11px; margin-top: 6px; cursor: pointer; font-weight: 700; width: 100%;">🧮 Contar Billetes</button>
-                    <small style="color: var(--text-muted); font-size: 10px; display: block; margin-top: 4px;">(Fondo + Efec - Gastos - Propina Tarj)</small>
+                <div class="hero-metric" style="--accent: #c084fc;">
+                    <span>Ventas banco (tarjeta / transferencia)</span>
+                    <h3>$<span id="corte-tarjeta">0.00</span></h3>
+                    <small class="metric-note">Debe coincidir con la terminal</small>
                 </div>
             </div>
 
-            <!-- Propinas y Total General -->
-            <div style="display: flex; gap: 14px; margin-bottom: 24px; flex-wrap: wrap;">
-                <div style="flex: 1; background: var(--surface-elevated); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-warning);">
-                    <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); text-transform: uppercase;">⚠️ Propinas Tarjeta </span>
-                    <h3 style="margin: 6px 0 0; color: #fbbf24; font-size: 22px; font-family: var(--font-mono);">$<span id="corte-propinas-tarjeta">0.00</span></h3>
+            <!-- De dónde sale el efectivo esperado -->
+            <h4 class="corte-section-title">¿Cómo se calcula el efectivo esperado?</h4>
+            <div class="corte-formula">
+                <div class="summary-metric" style="border-left-color: var(--color-warning);">
+                    <span>Fondo inicial</span>
+                    <h3 style="color: var(--color-warning);">$<span id="corte-fondo">0.00</span></h3>
+                    <button onclick="configurarFondo()" class="metric-btn">✏️ Editar</button>
                 </div>
-                <div style="flex: 1; background: var(--surface-elevated); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); border-left: 4px solid var(--text-muted);">
-                    <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); text-transform: uppercase;">Propinas Efectivo </span>
-                    <h3 style="margin: 6px 0 0; color: #ffffff; font-size: 22px; font-family: var(--font-mono);">$<span id="corte-propinas-efectivo">0.00</span></h3>
+                <div class="formula-op">+</div>
+                <div class="summary-metric" style="border-left-color: var(--color-success);">
+                    <span>Efectivo vendido</span>
+                    <h3 style="color: var(--color-success);">$<span id="corte-efectivo">0.00</span></h3>
                 </div>
-                <div style="flex: 1; background: var(--surface-elevated); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-success);">
-                    <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); text-transform: uppercase;">Total General Vendido</span>
-                    <h3 style="margin: 6px 0 0; color: var(--color-success); font-size: 22px; font-family: var(--font-mono);">$<span id="corte-total">0.00</span></h3>
+                <div class="formula-op">−</div>
+                <div class="summary-metric" style="border-left-color: var(--color-danger);">
+                    <span>Gastos / retiros</span>
+                    <h3 style="color: var(--color-danger);">$<span id="corte-gastos">0.00</span></h3>
+                    <div style="display: flex; gap: 6px;">
+                        <button onclick="abrirModalGasto()" class="metric-btn metric-btn-danger">💸 Retirar</button>
+                        <button onclick="verListaGastos()" class="metric-btn">👁️ Detalles</button>
+                    </div>
+                </div>
+                <div class="formula-op">−</div>
+                <div class="summary-metric" style="border-left-color: var(--color-warning);">
+                    <span>Propinas tarjeta</span>
+                    <h3 style="color: var(--color-warning);">$<span id="corte-propinas-tarjeta">0.00</span></h3>
+                    <small class="metric-note">Se entregan al mesero en efectivo</small>
+                </div>
+            </div>
+
+            <h4 class="corte-section-title">Desglose</h4>
+            <div class="corte-extra">
+                <div class="summary-metric" style="border-left-color: var(--text-muted);">
+                    <span>Propinas en efectivo</span>
+                    <h3>$<span id="corte-propinas-efectivo">0.00</span></h3>
+                    <small class="metric-note">No se suman al efectivo esperado</small>
                 </div>
             </div>
 
@@ -292,59 +335,92 @@
     <main id="admin-view" class="corte-container" style="display: none;">
         <div class="corte-card" style="max-width: 1200px;">
             <div class="corte-header">
-                <h2>Operación de Menú y Ajustes</h2>
+                <h2>Menú y Ajustes</h2>
                 <button id="btn-close-admin" class="btn-secondary" style="padding: 10px 16px;">⬅️ Volver</button>
             </div>
-            
-            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 24px;">
-                <!-- Formulario Nuevo Platillo -->
-                <div style="background: var(--surface-elevated); padding: 18px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
-                    <h3 style="margin-top: 0; font-size: 15px; color: var(--brand-primary); font-weight: 800;">Nuevo Platillo</h3>
-                    <form id="product-form" style="display: flex; flex-direction: column; gap: 10px;">
+
+            <div class="admin-tabs" role="tablist">
+                <button class="admin-tab" data-tab="platillos" onclick="switchAdminTab('platillos')">🥩 Platillos</button>
+                <button class="admin-tab" data-tab="notas" onclick="switchAdminTab('notas')">📝 Notas rápidas</button>
+                <button class="admin-tab" data-tab="mesas" onclick="switchAdminTab('mesas')">🪑 Mesas y meseros</button>
+                <button class="admin-tab" data-tab="seguridad" onclick="switchAdminTab('seguridad')">🔐 Seguridad y respaldo</button>
+            </div>
+
+            <!-- PESTAÑA: PLATILLOS -->
+            <section class="admin-tab-panel" data-panel="platillos">
+                <div class="admin-two-col">
+                    <div class="admin-box">
+                        <h3 class="admin-box-title">Nuevo platillo</h3>
+                        <form id="product-form" style="display: flex; flex-direction: column; gap: 10px;">
                         <input type="text" id="new-name" placeholder="Nombre (Ej. Parrillada Mixta)" required>
                         <input type="number" step="0.01" id="new-price" placeholder="Precio (Ej. 760.00)" required>
                         <select id="new-station"><option value="COCINA">COCINA</option><option value="BARRA">BARRA</option></select>
                         <select id="new-category" required><option value="">Selecciona Categoría</option></select>
                         <button type="submit" class="btn-primary" style="margin-top: 4px;">Guardar Platillo</button>
                     </form>
+                    </div>
+                    <div class="admin-box">
+                        <h3 class="admin-box-title">Nueva categoría</h3>
+                        <p class="admin-hint">Las categorías agrupan los platillos en la pantalla de la caja.</p>
+                        <form id="category-form" style="display: flex; gap: 8px;"><input type="text" id="new-category-name" placeholder="Nueva Categoría" required style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
+                    </div>
                 </div>
-
-                <!-- Configuraciones Rápidas -->
-                <div style="background: var(--surface-elevated); padding: 18px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 14px;">
-                    <h3 style="margin-top: 0; font-size: 15px; color: var(--brand-primary); font-weight: 800;">Configuraciones Rápidas</h3>
-                    <form id="category-form" style="display: flex; gap: 8px;"><input type="text" id="new-category-name" placeholder="Nueva Categoría" required style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
-                    <form id="waiter-form" style="display: flex; gap: 8px;"><input type="text" id="new-waiter-name" placeholder="Nuevo Mesero" required style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
-                    <form id="table-form" style="display: flex; gap: 8px;"><input type="text" id="new-table-number" placeholder="Número de Mesa" required style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
-                    <form id="modifier-form" style="display: flex; gap: 6px;"><input type="text" id="new-modifier-name" placeholder="Nota Rápida" required style="flex:2;"><input type="number" id="new-modifier-price" placeholder="Precio (+$)" style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
-                </div>
-
-                <!-- Seguridad y Respaldo -->
-                <div style="background: var(--surface-elevated); padding: 18px; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); display: flex; flex-direction: column; gap: 14px;">
-                    <h3 style="margin-top: 0; font-size: 15px; color: var(--brand-primary); font-weight: 800;">Seguridad y Respaldo</h3>
-                    <form id="pin-form" style="display: flex; flex-direction: column; gap: 10px;">
-                        <input type="password" id="current-pin" placeholder="PIN Actual" required>
-                        <input type="password" id="new-pin" placeholder="Nuevo PIN" required>
-                        <button type="submit" class="btn-primary" style="background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 4px 14px rgba(245, 158, 11, 0.35);">Actualizar PIN</button>
-                    </form>
-                    <button id="btn-backup-dashboard" class="btn-success" style="margin-top: 4px;">💾 Descargar Base de Datos</button>
-                </div>
-            </div>
-
-            <h3 style="margin-top: 28px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; font-size: 15px; color: var(--brand-primary); font-weight: 800;">Listas Actuales</h3>
-            <div style="display: flex; gap: 16px; flex-wrap: wrap; margin-bottom: 24px;">
-                <div style="flex: 1; min-width: 250px;"><h4 style="margin: 0 0 8px; color: var(--text-secondary); font-size: 13px;">Mesas</h4><div id="admin-tables-list" style="display: flex; flex-wrap: wrap; gap: 8px;"></div></div>
-                <div style="flex: 1; min-width: 250px;"><h4 style="margin: 0 0 8px; color: var(--text-secondary); font-size: 13px;">Meseros</h4><div id="admin-waiters-list" style="display: flex; flex-wrap: wrap; gap: 8px;"></div></div>
-                <div style="flex: 1; min-width: 250px;"><h4 style="margin: 0 0 8px; color: var(--text-secondary); font-size: 13px;">Notas Rápidas</h4><div id="admin-modifiers-list" style="display: flex; flex-wrap: wrap; gap: 8px;"></div></div>
-            </div>
-
-            <h3 style="margin-top: 28px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 8px; font-size: 15px; color: var(--brand-primary); font-weight: 800;">Catálogo de Platillos</h3>
-            <input type="text" id="buscador-catalogo" onkeyup="filtrarCatalogo()" placeholder="🔍 Buscar platillo, categoría o estación..." style="width: 100%; margin-bottom: 14px;">
-            <div class="table-responsive">
+                <h3 class="admin-section-title">Catálogo de platillos</h3>
+                <input type="text" id="buscador-catalogo" onkeyup="filtrarCatalogo()" placeholder="🔍 Buscar platillo, categoría o estación..." style="width: 100%; margin-bottom: 14px;">
+                <div class="table-responsive">
                 <table class="corte-table">
                     <thead><tr><th>Nombre</th><th>Precio</th><th>Área</th><th>Categoría</th><th>Estado</th><th>Acciones</th></tr></thead>
                     <tbody id="admin-products-tbody"></tbody>
                 </table>
             </div>
+            </section>
+
+            <!-- PESTAÑA: NOTAS RÁPIDAS -->
+            <section class="admin-tab-panel" data-panel="notas" style="display: none;">
+                <div class="admin-box">
+                    <h3 class="admin-box-title">Notas rápidas</h3>
+                    <p class="admin-hint">Aparecen como botones al poner una nota a un platillo. Si tienen precio, se suma al platillo.</p>
+                    <form id="modifier-form" style="display: flex; gap: 6px;"><input type="text" id="new-modifier-name" placeholder="Nota Rápida" required style="flex:2;"><input type="number" id="new-modifier-price" placeholder="+$" style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
+                    <div id="admin-modifiers-list" class="admin-chip-list"></div>
+                </div>
+            </section>
+
+            <!-- PESTAÑA: MESAS Y MESEROS -->
+            <section class="admin-tab-panel" data-panel="mesas" style="display: none;">
+                <div class="admin-two-col">
+                    <div class="admin-box">
+                        <h3 class="admin-box-title">Mesas</h3>
+                        <form id="table-form" style="display: flex; gap: 8px;"><input type="text" id="new-table-number" placeholder="Número de Mesa" required style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
+                        <div id="admin-tables-list" class="admin-chip-list"></div>
+                    </div>
+                    <div class="admin-box">
+                        <h3 class="admin-box-title">Meseros</h3>
+                        <form id="waiter-form" style="display: flex; gap: 8px;"><input type="text" id="new-waiter-name" placeholder="Nuevo Mesero" required style="flex:1;"><button type="submit" class="btn-primary" style="padding: 8px 14px;">➕</button></form>
+                        <div id="admin-waiters-list" class="admin-chip-list"></div>
+                    </div>
+                </div>
+            </section>
+
+            <!-- PESTAÑA: SEGURIDAD Y RESPALDO -->
+            <section class="admin-tab-panel" data-panel="seguridad" style="display: none;">
+                <div class="admin-two-col">
+                    <div class="admin-box">
+                        <h3 class="admin-box-title">PIN de administrador</h3>
+                        <p class="admin-hint">De 4 a 8 dígitos. Se pide para entrar al panel, cancelar y aplicar descuentos.</p>
+                        <form id="pin-form" style="display: flex; flex-direction: column; gap: 10px;">
+                        <input type="password" id="current-pin" placeholder="PIN Actual" required>
+                        <input type="password" id="new-pin" placeholder="Nuevo PIN" required>
+                        <button type="submit" class="btn-primary" style="background: linear-gradient(135deg, #f59e0b, #d97706); box-shadow: 0 4px 14px rgba(245, 158, 11, 0.35);">Actualizar PIN</button>
+                    </form>
+                    </div>
+                    <div class="admin-box">
+                        <h3 class="admin-box-title">Respaldo</h3>
+                        <p class="admin-hint">La app de escritorio guarda un respaldo automático cada día. Aquí puedes descargar una copia completa en este momento.</p>
+                        <div id="settings-backup" class="metric-note" style="margin-bottom: 12px;"></div>
+                        <button id="btn-backup-dashboard" class="btn-success" style="margin-top: 4px;">💾 Descargar Base de Datos</button>
+                    </div>
+                </div>
+            </section>
         </div>
     </main>
 

@@ -102,6 +102,8 @@ window.addEventListener('popstate', (e) => {
     if (e.state && e.state.view) { setView(e.state.view, false); }
 });
 
+const ADMIN_VIEWS = ['admin-hub-view', 'corte-view', 'admin-view', 'audit-view'];
+
 function setView(viewId, pushHistory = true) {
     if(welcomeView) welcomeView.style.display = 'none';
     if(posView) posView.style.display = 'none';
@@ -124,6 +126,14 @@ function setView(viewId, pushHistory = true) {
     
     localStorage.setItem('currentViewId', viewId);
     currentViewId = viewId;
+
+    // Barra lateral del panel: solo en vistas de administración y con sesión de admin
+    const isAdminView = ADMIN_VIEWS.includes(viewId) && isAdminSessionActive;
+    document.body.classList.toggle('admin-mode', isAdminView);
+    const adminNav = document.getElementById('admin-nav');
+    if (adminNav) adminNav.style.display = isAdminView ? '' : 'none';
+    if (isAdminView) updateAdminNav();
+    if (viewId === 'admin-hub-view' && isAdminSessionActive) loadDashboard();
 
     if (pushHistory) {
         window.history.pushState({ view: viewId }, '', `#${viewId}`);
@@ -357,7 +367,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (isAdminSessionActive && btnMasterAdmin) { btnMasterAdmin.innerHTML = '👑 Volver al Panel (Desbloqueado)'; btnMasterAdmin.style.backgroundColor = '#d35400'; }
     setView(currentViewId);
     if(currentViewId === 'corte-view') loadCorteData();
-    if(currentViewId === 'admin-view') { loadAdminProducts(); loadWaiters(); loadModifiers(); }
+    if(currentViewId === 'admin-view') { switchAdminTab(getAdminTab()); loadAdminProducts(); loadWaiters(); loadModifiers(); }
     if(currentViewId === 'audit-view') loadFullAuditLogs();
 });
 
@@ -404,9 +414,124 @@ document.getElementById('btn-exit-admin').onclick = async () => {
 };
 
 window.goToPOS = function() { setView('pos-view'); loadTables(); };
+
+// ========================================================
+// PANEL ADMINISTRATIVO: navegación lateral y pestañas de Menú/Ajustes
+// ========================================================
+const ADMIN_TAB_KEY = 'pos_admin_tab';
+const getAdminTab = () => { try { return localStorage.getItem(ADMIN_TAB_KEY) || 'platillos'; } catch (_) { return 'platillos'; } };
+
+function updateAdminNav() {
+    const tab = getAdminTab();
+    const active = currentViewId === 'admin-hub-view' ? 'inicio'
+        : currentViewId === 'corte-view' ? 'corte'
+        : currentViewId === 'audit-view' ? 'auditoria'
+        : currentViewId === 'admin-view' ? ((tab === 'mesas' || tab === 'seguridad') ? 'ajustes' : 'menu')
+        : '';
+    document.querySelectorAll('.admin-nav-item[data-nav]').forEach(b => b.classList.toggle('active', b.dataset.nav === active));
+}
+
+window.switchAdminTab = function(tab) {
+    try { localStorage.setItem(ADMIN_TAB_KEY, tab); } catch (_) {}
+    document.querySelectorAll('.admin-tab').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+    document.querySelectorAll('.admin-tab-panel').forEach(p => { p.style.display = p.dataset.panel === tab ? '' : 'none'; });
+    if (tab === 'seguridad') loadBackupStatus('settings-backup');
+    updateAdminNav();
+};
+
+window.adminNavigate = function(section) {
+    triggerHaptic(20);
+    if (section === 'inicio') setView('admin-hub-view');
+    else if (section === 'caja') { goToPOS(); loadProducts(); loadCategories(); }
+    else if (section === 'corte') openSubAdmin('corte');
+    else if (section === 'menu') { openSubAdmin('menu'); switchAdminTab('platillos'); }
+    else if (section === 'ajustes') { openSubAdmin('menu'); switchAdminTab('mesas'); }
+    else if (section === 'auditoria') openSubAdmin('audit');
+};
+
+// Efectivo que debe haber físicamente en la caja (misma fórmula en el corte y en el resumen)
+function calcularEfectivoEsperado(fondo, sum) {
+    return fondo + sum.total_efectivo - (sum.total_gastos || 0) - sum.propinas_tarjeta;
+}
+
+async function loadBackupStatus(targetId) {
+    const el = document.getElementById(targetId);
+    if (!el) return;
+    try {
+        const res = await fetch('/api/reports/backup-status');
+        if (!res.ok) return;
+        const data = await res.json();
+        if (!data.last_backup) {
+            el.innerHTML = '⚠️ Aún no hay respaldos automáticos (se crean al abrir la app de escritorio).';
+            el.style.color = 'var(--color-warning)';
+            return;
+        }
+        const dias = Math.round((new Date(obtenerFechaLocal()) - new Date(data.last_backup)) / 86400000);
+        const cuando = dias <= 0 ? 'hoy' : dias === 1 ? 'ayer' : `hace ${dias} días`;
+        el.innerHTML = `${dias > 2 ? '⚠️' : '✅'} Último respaldo automático: <b>${escapeHtml(data.last_backup)}</b> (${cuando}) · ${data.count} guardados`;
+        el.style.color = dias > 2 ? 'var(--color-warning)' : 'var(--text-secondary)';
+    } catch (err) { console.error('Respaldo:', err); }
+}
+
+// Resumen del día en la pantalla de Inicio del panel
+window.loadDashboard = async function() {
+    if (!isAdminSessionActive) return;
+    const hoy = obtenerFechaLocal();
+    const dateEl = document.getElementById('dash-date');
+    if (dateEl) {
+        const txt = new Date().toLocaleDateString('es-MX', { weekday: 'long', day: 'numeric', month: 'long', timeZone: 'America/Mexico_City' });
+        dateEl.textContent = txt.charAt(0).toUpperCase() + txt.slice(1);
+    }
+    loadBackupStatus('dash-backup');
+    try {
+        const [resFondo, resCorte, resTables] = await Promise.all([
+            fetch(`/api/reports/fondo?date=${hoy}`), fetch(`/api/reports/corte?date=${hoy}`), fetch('/api/catalog/tables')
+        ]);
+        if (!resFondo.ok || !resCorte.ok || !resTables.ok) return;
+        const fondo = (await resFondo.json()).fondo || 0;
+        const corte = await resCorte.json();
+        const tables = (await resTables.json()).tables || [];
+        const sum = corte.summary;
+
+        document.getElementById('dash-ventas').textContent = sum.total_general.toFixed(2);
+        const nTickets = corte.orders.length;
+        document.getElementById('dash-tickets').textContent = `${nTickets} ${nTickets === 1 ? 'ticket cerrado' : 'tickets cerrados'}`;
+        document.getElementById('dash-esperado').textContent = calcularEfectivoEsperado(fondo, sum).toFixed(2);
+
+        const abiertas = tables.filter(t => t.status === 'OCUPADA');
+        const pendiente = (t) => (t.remaining_balance !== null && t.remaining_balance !== undefined) ? t.remaining_balance : (t.current_total || 0);
+        document.getElementById('dash-por-cobrar').textContent = abiertas.reduce((acc, t) => acc + pendiente(t), 0).toFixed(2);
+        document.getElementById('dash-mesas-abiertas').textContent = `${abiertas.length} ${abiertas.length === 1 ? 'mesa abierta' : 'mesas abiertas'}`;
+
+        const drafts = tables.filter(t => t.has_draft).length;
+        document.getElementById('dash-drafts').textContent = drafts;
+        document.getElementById('dash-drafts-card').style.borderLeftColor = drafts > 0 ? 'var(--brand-primary)' : 'var(--border-subtle)';
+
+        const list = document.getElementById('dash-open-tables');
+        const conPendiente = tables.filter(t => t.status === 'OCUPADA' || t.has_draft)
+            .sort((a, b) => (b.minutes_open || 0) - (a.minutes_open || 0));
+        if (conPendiente.length === 0) {
+            list.innerHTML = '<p class="metric-note">No hay mesas abiertas en este momento.</p>';
+        } else {
+            list.innerHTML = '';
+            conPendiente.forEach(t => {
+                const mins = t.minutes_open || 0;
+                const color = mins > 45 ? 'var(--color-danger)' : mins > 20 ? 'var(--color-warning)' : 'var(--color-success)';
+                const row = document.createElement('button');
+                row.className = 'dash-row';
+                row.innerHTML = `<span class="dash-row-table">Mesa ${escapeHtml(t.table_number)}</span>
+                    <span class="dash-row-meta">${t.status === 'OCUPADA' ? `<span style="color:${color}">● ${mins} min</span> · 👤 ${escapeHtml(t.waiter_name || '—')}` : ''}${t.has_draft ? ' <span class="dash-row-draft">📝 sin enviar</span>' : ''}</span>
+                    <span class="dash-row-total">${t.status === 'OCUPADA' ? '$' + pendiente(t).toFixed(2) : ''}</span>`;
+                // Abre la mesa directamente en la caja
+                row.onclick = () => { adminNavigate('caja'); selectTable(t); };
+                list.appendChild(row);
+            });
+        }
+    } catch (err) { console.error('Resumen del día:', err); }
+};
 window.openSubAdmin = async function(section) {
     if (section === 'corte') { setView('corte-view'); loadCorteData(); } 
-    else if (section === 'menu') { setView('admin-view'); loadAdminProducts(); loadWaiters(); loadModifiers(); } 
+    else if (section === 'menu') { setView('admin-view'); switchAdminTab(getAdminTab()); loadAdminProducts(); loadWaiters(); loadModifiers(); } 
     else if (section === 'audit') { setView('audit-view'); loadFullAuditLogs(); }
 };
 
@@ -1498,7 +1623,7 @@ async function loadAdminProducts() {
                 ? `<button onclick="toggleProductStatus(${p.id}, 0)" style="background:#27ae60; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🟢 Disponible</button>`
                 : `<button onclick="toggleProductStatus(${p.id}, 1)" style="background:#c0392b; color:white; border:none; padding:6px 10px; border-radius:4px; font-size:11px; cursor:pointer; font-weight:bold;">🔴 Agotado</button>`;
 
-            tbody.innerHTML += `<tr><td>${p.name}</td><td>$${p.price.toFixed(2)}</td><td>${p.station}</td><td>${p.category}</td><td style="text-align: center;">${statusBtn}</td><td><button onclick="editProduct(${p.id})" class="btn-secondary" style="background-color: #f39c12; padding: 4px; border: none;">Editar</button> <button onclick="deleteProduct(${p.id})" class="btn-secondary" style="background-color: #e74c3c; padding: 4px; border: none; color: white;">X</button></td></tr>`; 
+            tbody.innerHTML += `<tr><td>${p.name}</td><td>$${p.price.toFixed(2)}</td><td>${p.station}</td><td>${p.category}</td><td style="text-align: center;">${statusBtn}</td><td><button onclick="editProduct(${p.id})" class="btn-secondary" style="background-color: #f39c12; color: #1a1a1a; font-weight: 800; padding: 4px 10px; border: none;">Editar</button> <button onclick="deleteProduct(${p.id})" class="btn-secondary" style="background-color: #e74c3c; padding: 4px; border: none; color: white;">X</button></td></tr>`; 
         }); 
     } catch(err) {
         console.error('Error al cargar productos de admin:', err);
@@ -1758,7 +1883,7 @@ async function loadCorteData() {
         const totalGastos = sum.total_gastos || 0;
         document.getElementById('corte-gastos').textContent = totalGastos.toFixed(2);
 
-        const efectivoEsperado = fondoAmount + sum.total_efectivo - totalGastos - sum.propinas_tarjeta;
+        const efectivoEsperado = calcularEfectivoEsperado(fondoAmount, sum);
         document.getElementById('corte-esperado').textContent = efectivoEsperado.toFixed(2);
         
         // === NUEVO DESGLOSE PARA LA DUEÑA (TPV Y LLEVAR) ===
@@ -1776,10 +1901,6 @@ async function loadCorteData() {
         const wsBox = document.getElementById('waiter-summary-box'); 
         wsBox.innerHTML = `
         <div style="display: flex; gap: 12px; margin-bottom: 20px; width: 100%; flex-wrap: wrap;">
-            <div style="background: var(--surface-elevated); padding: 14px 18px; border-radius: var(--radius-md); flex: 1; min-width: 180px; border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-info); box-shadow: var(--shadow-sm);">
-                <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px;">💳 COBROS TPV (TERMINAL)</span>
-                <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${sum.total_tarjeta.toFixed(2)}</h3>
-            </div>
             <div style="background: var(--surface-elevated); padding: 14px 18px; border-radius: var(--radius-md); flex: 1; min-width: 180px; border: 1px solid var(--border-subtle); border-left: 4px solid var(--color-purple); box-shadow: var(--shadow-sm);">
                 <span style="font-size: 11px; font-weight: 800; color: var(--text-secondary); letter-spacing: 0.5px;">🛍️ VENTAS PARA LLEVAR</span>
                 <h3 style="margin: 6px 0 0; color: #fff; font-size: 22px; font-family: var(--font-mono);">$${totalLlevar.toFixed(2)}</h3>
@@ -1799,7 +1920,7 @@ async function loadCorteData() {
             meserosGrid.innerHTML = '<p style="color: var(--text-muted); font-size: 13px;">No hay ventas registradas en esta fecha.</p>'; 
         } else { 
             for (const [waiter, info] of Object.entries(sum.ventas_por_mesero)) { 
-                meserosGrid.innerHTML += `<div style="background: var(--surface-elevated); padding: 12px 14px; border-radius: var(--radius-md); border-left: 4px solid var(--brand-primary); border: 1px solid var(--border-subtle); flex: 1; min-width: 160px; box-shadow: var(--shadow-sm);"><span style="font-size: 12px; font-weight: 700; color: var(--text-secondary);">👤 ${waiter}</span><h4 style="margin: 4px 0 0; color: #fff; font-size: 18px; font-family: var(--font-mono);">$${info.total.toFixed(2)}</h4><small style="color: var(--brand-primary); font-weight: 700;">${info.tickets} tickets</small></div>`; 
+                meserosGrid.innerHTML += `<div style="background: var(--surface-elevated); padding: 12px 14px; border-radius: var(--radius-md); border-left: 4px solid var(--brand-primary); border: 1px solid var(--border-subtle); flex: 1; min-width: 160px; box-shadow: var(--shadow-sm);"><span style="font-size: 12px; font-weight: 700; color: var(--text-secondary);">👤 ${waiter}</span><h4 style="margin: 4px 0 0; color: #fff; font-size: 18px; font-family: var(--font-mono);">$${info.total.toFixed(2)}</h4><small style="color: var(--brand-primary); font-weight: 700;">${info.tickets} ${info.tickets === 1 ? 'ticket' : 'tickets'}</small></div>`; 
             } 
         }
         // ====================================================
@@ -1869,6 +1990,7 @@ window.configurarFondo = async function() {
 
 const socket = io();
 socket.on('update-tables', () => { 
+    if(adminHubView.style.display !== 'none' && navigator.onLine) loadDashboard();
     if(posView.style.display !== 'none' && navigator.onLine) loadTables(); 
     if(corteView.style.display !== 'none') loadCorteData(); 
 });
@@ -2288,7 +2410,7 @@ window.generarPDFEjecutivo = async function() {
 
         const sum = data.summary;
         const totalGastos = sum.total_gastos || 0;
-        const efectivoEsperado = fondoAmount + sum.total_efectivo - totalGastos - sum.propinas_tarjeta;
+        const efectivoEsperado = calcularEfectivoEsperado(fondoAmount, sum);
 
         // 1. Fechas y Globales
         document.getElementById('pdf-fecha').textContent = dateVal;

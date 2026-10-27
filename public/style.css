@@ -968,9 +968,15 @@ header#main-header {
 /* Grid de Métricas Financieras KPI */
 .corte-summary-box {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+    /* 170px permite las 5 métricas en una sola fila en la caja (sin "Efectivo Esperado" huérfano) */
+    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
     gap: 14px;
     margin-bottom: 24px;
+}
+/* Los campos dentro de formularios en fila deben poder encogerse (si no, se salen de su tarjeta) */
+.corte-card form input,
+.corte-card form select {
+    min-width: 0;
 }
 .summary-metric {
     background: var(--surface-elevated);
@@ -1001,6 +1007,21 @@ header#main-header {
     font-family: var(--font-mono);
     color: var(--text-primary);
     letter-spacing: -0.5px;
+}
+/* En la fila de 5 métricas el monto se adapta al ancho (cabe "-$128,450.50" sin desbordarse) */
+.corte-summary-box .summary-metric h3 {
+    font-size: clamp(18px, 1.5vw, 26px);
+    white-space: nowrap;
+}
+/* El monto dentro del h3 es un <span>: no debe heredar el estilo de etiqueta de arriba */
+.summary-metric h3 span {
+    display: inline;
+    font-size: inherit;
+    font-weight: inherit;
+    color: inherit;
+    text-transform: none;
+    letter-spacing: inherit;
+    margin: 0;
 }
 
 /* Tablas Administrativas y de Tickets */
@@ -1306,4 +1327,264 @@ header#main-header {
         gap: 6px;
         box-shadow: 0 4px 12px rgba(255, 87, 34, 0.4);
     }
+}
+
+/* ========================================================
+   PANEL ADMINISTRATIVO: barra lateral, resumen, corte y pestañas
+   ======================================================== */
+#admin-nav {
+    position: fixed;
+    top: 60px;
+    left: 0;
+    bottom: 0;
+    width: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    padding: 16px 12px;
+    background: var(--surface-card);
+    border-right: 1px solid var(--border-subtle);
+    z-index: 50;
+}
+.admin-nav-item {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    border: none;
+    border-radius: var(--radius-md);
+    background: transparent;
+    color: var(--text-secondary);
+    font-size: 15px;
+    font-weight: 700;
+    text-align: left;
+    cursor: pointer;
+    transition: background var(--transition-fast), color var(--transition-fast);
+}
+.admin-nav-item:hover { background: var(--surface-subtle); color: var(--text-primary); }
+.admin-nav-item.active {
+    background: rgba(255, 87, 34, 0.14);
+    color: var(--brand-primary);
+    box-shadow: inset 3px 0 0 var(--brand-primary);
+}
+.admin-nav-icon { font-size: 18px; width: 22px; text-align: center; }
+.admin-nav-spacer { flex: 1; }
+.admin-nav-lock { color: #f87171; }
+.admin-nav-lock:hover { background: rgba(239, 68, 68, 0.12); color: #f87171; }
+
+/* Con la barra lateral, el contenido se recorre y lo que ya resuelve la barra se oculta */
+body.admin-mode .corte-container { margin-left: 200px; }
+body.admin-mode #device-waiter-badge,
+body.admin-mode #btn-master-admin,
+body.admin-mode #btn-close-corte,
+body.admin-mode #btn-close-admin,
+body.admin-mode #btn-close-audit { display: none !important; }
+
+.metric-note { display: block; font-size: 12px; color: var(--text-muted); margin-top: 6px; line-height: 1.4; }
+.summary-metric .metric-note { text-transform: none; letter-spacing: 0; font-weight: 500; }
+.metric-btn {
+    margin-top: 10px;
+    background: var(--surface-subtle);
+    color: var(--text-primary);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    padding: 6px 10px;
+    font-size: 12px;
+    font-weight: 700;
+    cursor: pointer;
+}
+.metric-btn:hover { border-color: var(--border-highlight); }
+.metric-btn-danger { background: var(--color-danger); border-color: var(--color-danger); color: #fff; }
+
+/* --- Inicio: resumen del día --- */
+.dash-subtitle { color: var(--text-secondary); font-size: 14px; margin-top: 4px; }
+.dash-kpis {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 14px;
+    margin-bottom: 24px;
+}
+.dash-grid {
+    display: grid;
+    grid-template-columns: 2fr 1fr;
+    gap: 18px;
+}
+.admin-box {
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-md);
+    padding: 18px;
+    min-width: 0;
+}
+.admin-box-title { margin: 0 0 12px; font-size: 15px; font-weight: 800; color: var(--brand-primary); }
+.dash-list { display: flex; flex-direction: column; gap: 8px; }
+.dash-row {
+    display: grid;
+    grid-template-columns: 90px 1fr auto;
+    align-items: center;
+    gap: 12px;
+    width: 100%;
+    padding: 12px 14px;
+    background: var(--surface-subtle);
+    border: 1px solid var(--border-subtle);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    text-align: left;
+    cursor: pointer;
+}
+.dash-row:hover { border-color: var(--brand-primary); }
+.dash-row-table { font-weight: 800; }
+.dash-row-meta { font-size: 13px; color: var(--text-secondary); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dash-row-draft { color: var(--color-warning); font-weight: 700; }
+.dash-row-total { font-family: var(--font-mono); font-weight: 800; color: var(--color-warning); }
+.dash-actions { display: flex; flex-direction: column; gap: 8px; }
+.dash-actions button { width: 100%; padding: 12px; }
+.btn-lock {
+    background: rgba(239, 68, 68, 0.15);
+    color: #f87171;
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    padding: 12px 28px;
+    border-radius: var(--radius-full);
+    font-weight: 700;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+/* --- Corte: cifras clave, fórmula y desglose --- */
+.corte-hero {
+    display: grid;
+    grid-template-columns: 1fr 1.2fr 1fr;
+    gap: 16px;
+    margin-bottom: 28px;
+}
+.hero-metric {
+    background: var(--surface-elevated);
+    border: 1px solid var(--border-subtle);
+    border-top: 4px solid var(--accent);
+    border-radius: var(--radius-md);
+    padding: 20px 22px;
+    min-width: 0;
+}
+.hero-metric > span {
+    display: block;
+    font-size: 12px;
+    font-weight: 800;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+}
+.hero-metric h3 {
+    margin: 8px 0 0;
+    font-family: var(--font-mono);
+    font-size: clamp(24px, 2.4vw, 38px);
+    font-weight: 900;
+    color: var(--accent);
+    white-space: nowrap;
+}
+.hero-metric h3 span { font: inherit; color: inherit; }
+.hero-main { background: #111a28; }
+.hero-btn {
+    margin-top: 12px;
+    width: 100%;
+    background: var(--color-info);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius-sm);
+    padding: 10px;
+    font-size: 14px;
+    font-weight: 800;
+    cursor: pointer;
+}
+.corte-section-title {
+    margin: 0 0 12px;
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--text-secondary);
+    text-transform: uppercase;
+    letter-spacing: 1px;
+}
+.corte-formula {
+    display: flex;
+    align-items: stretch;
+    gap: 10px;
+    margin-bottom: 28px;
+}
+.corte-formula .summary-metric { flex: 1 1 0; min-width: 0; }
+.formula-op {
+    align-self: center;
+    font-size: 26px;
+    font-weight: 900;
+    color: var(--text-muted);
+}
+.corte-formula .summary-metric h3,
+.corte-extra .summary-metric h3 {
+    font-size: clamp(18px, 1.5vw, 24px);
+    white-space: nowrap;
+}
+.corte-extra {
+    display: grid;
+    /* auto-fill: una sola tarjeta no se estira a todo el ancho */
+    grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+    gap: 14px;
+    margin-bottom: 14px;
+}
+
+/* --- Menú y Ajustes: pestañas --- */
+.admin-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 20px;
+    border-bottom: 1px solid var(--border-subtle);
+    overflow-x: auto;
+}
+.admin-tab {
+    background: transparent;
+    border: none;
+    border-bottom: 3px solid transparent;
+    color: var(--text-secondary);
+    padding: 12px 16px;
+    font-size: 14px;
+    font-weight: 700;
+    white-space: nowrap;
+    cursor: pointer;
+}
+.admin-tab:hover { color: var(--text-primary); }
+.admin-tab.active { color: var(--brand-primary); border-bottom-color: var(--brand-primary); }
+.admin-two-col {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 18px;
+    margin-bottom: 24px;
+}
+.admin-hint { margin: -4px 0 14px; font-size: 13px; color: var(--text-muted); line-height: 1.5; }
+.admin-section-title {
+    margin: 4px 0 12px;
+    font-size: 15px;
+    font-weight: 800;
+    color: var(--brand-primary);
+}
+.admin-chip-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+
+/* --- Celular / pantallas angostas --- */
+@media (max-width: 950px) {
+    #admin-nav {
+        position: sticky;
+        top: 0;
+        width: auto;
+        flex-direction: row;
+        overflow-x: auto;
+        padding: 8px;
+        border-right: none;
+        border-bottom: 1px solid var(--border-subtle);
+    }
+    .admin-nav-item { width: auto; flex: 0 0 auto; padding: 10px 12px; font-size: 13px; gap: 6px; }
+    .admin-nav-item.active { box-shadow: inset 0 -3px 0 var(--brand-primary); }
+    .admin-nav-spacer { display: none; }
+    body.admin-mode .corte-container { margin-left: 0; }
+    .dash-grid { grid-template-columns: 1fr; }
+    .corte-hero { grid-template-columns: 1fr; }
+    .corte-formula { flex-direction: column; }
+    .formula-op { display: none; }
+    .dash-row { grid-template-columns: 70px 1fr auto; }
 }

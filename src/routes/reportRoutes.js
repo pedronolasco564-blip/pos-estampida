@@ -15,5 +15,6 @@ router.post('/expenses/:id/delete', pinAttemptLimiter, reportController.deleteEx
 router.get('/fondo', reportController.getFondo);
 router.post('/fondo', reportController.setFondo);
 router.get('/audit', reportController.getAuditLogs);
+router.get('/backup-status', reportController.getBackupStatus);
 
 module.exports = router;

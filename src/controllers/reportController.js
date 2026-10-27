@@ -1,4 +1,5 @@
 const path = require('path');
+const fs = require('fs');
 const { dbGet, dbAll, dbRun, dbExec } = require('../utils/dbHelper');
 const { verifyAdminPin } = require('../middleware/verifyPin');
 const { calculateCorteData } = require('../services/reportService');
@@ -185,6 +186,21 @@ const backupDatabase = async (req, res) => {
     }
 };
 
+// Fecha del último respaldo automático diario (lo crea la app de escritorio en <datos>/respaldos)
+const getBackupStatus = async (req, res) => {
+    try {
+        const { DATA_DIR } = require('../config/paths');
+        let files = [];
+        try {
+            files = fs.readdirSync(path.join(DATA_DIR, 'respaldos')).filter(f => /^auto_\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
+        } catch (_) { /* aún no existe la carpeta */ }
+        res.json({ last_backup: files.length ? files[files.length - 1].slice(5, 15) : null, count: files.length });
+    } catch (err) {
+        console.error('[ReportController]', err);
+        res.status(500).json({ error: 'Error interno del servidor.' });
+    }
+};
+
 const getAuditLogs = async (req, res) => {
     try {
         const targetDate = req.query.date;
@@ -205,6 +221,7 @@ const getAuditLogs = async (req, res) => {
 };
 
 module.exports = {
+    getBackupStatus,
     getCorte,
     printCorte,
     backupDatabase,
