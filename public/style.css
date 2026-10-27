@@ -1644,3 +1644,20 @@ body.admin-mode #btn-close-audit { display: none !important; }
 .admin-cat-row button { background: #3a3a3a; color: #ecf0f1; border: 1px solid #555; border-radius: 4px; padding: 4px 8px; cursor: pointer; font-size: 12px; }
 .admin-cat-row button:disabled { opacity: 0.3; cursor: default; }
 .admin-cat-row button.cat-del { background: #c0392b; border-color: #c0392b; color: #fff; }
+
+/* Filtros de Auditoría */
+.audit-day-btn { padding: 8px 12px; }
+.audit-filters { display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center; margin-bottom: 10px; }
+.audit-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.audit-chip { background: #2c2c2c; color: #ecf0f1; border: 1px solid #444; border-radius: 999px; padding: 7px 14px; font-weight: 700; font-size: 13px; cursor: pointer; }
+.audit-chip.active { background: var(--accent, #ff5a1f); border-color: var(--accent, #ff5a1f); color: #fff; }
+.audit-chip.chip-alert:not(.active) { border-color: #c0392b; color: #ff8a80; }
+.audit-search { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; justify-content: flex-end; min-width: 0; }
+.audit-search select, .audit-search input { min-width: 0; }
+.audit-search input { flex: 1; max-width: 280px; }
+.audit-tag { display: inline-block; padding: 3px 8px; border-radius: 4px; font-weight: 800; font-size: 11px; white-space: nowrap; background: #2c2c2c; color: #ecf0f1; }
+.audit-tag.t-alert { background: rgba(192, 57, 43, 0.25); color: #ff8a80; }
+.audit-tag.t-money { background: rgba(39, 174, 96, 0.2); color: #6fdc9b; }
+.audit-tag.t-order { background: rgba(52, 152, 219, 0.2); color: #8cc8f2; }
+.audit-row-alert td { background: rgba(192, 57, 43, 0.07); }
+@media (max-width: 700px) { .audit-search { justify-content: stretch; } .audit-search input { max-width: none; } }

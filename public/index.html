@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Asadero La Estampida - POS</title>
-    <link rel="stylesheet" href="style.css?v=7">
+    <link rel="stylesheet" href="style.css?v=8">
     <link rel="icon" type="image/jpeg" href="logo.jpg">
     <style>
         @media print {
@@ -376,14 +376,28 @@
             <div class="corte-header">
                 <h2>Registro de Auditoría </h2>
                 <div style="display: flex; gap: 10px; align-items: center; flex-wrap: wrap;">
-                    <label style="font-size: 13px; font-weight: 700; color: var(--text-secondary);">Consultar fecha:</label>
+                    <button class="btn-secondary audit-day-btn" onclick="moverDiaAuditoria(-1)" title="Día anterior">◀</button>
                     <input type="date" id="audit-date-picker" style="font-weight: 700; cursor: pointer;">
+                    <button class="btn-secondary audit-day-btn" onclick="moverDiaAuditoria(1)" title="Día siguiente">▶</button>
                     <button id="btn-close-audit" class="btn-secondary" style="padding: 10px 16px;">⬅️ Volver</button>
                 </div>
             </div>
+            <div class="audit-filters">
+                <div class="audit-chips" id="audit-chips">
+                    <button class="audit-chip active" data-group="todos" onclick="setAuditGroup('todos')">Todos</button>
+                    <button class="audit-chip chip-alert" data-group="importantes" onclick="setAuditGroup('importantes')">⚠️ Importantes</button>
+                    <button class="audit-chip" data-group="ordenes" onclick="setAuditGroup('ordenes')">🧾 Órdenes</button>
+                    <button class="audit-chip" data-group="dinero" onclick="setAuditGroup('dinero')">💵 Dinero</button>
+                </div>
+                <div class="audit-search">
+                    <select id="audit-user-filter" onchange="renderAuditLogs()"><option value="">Todos los usuarios</option></select>
+                    <input type="search" id="audit-search" oninput="renderAuditLogs()" placeholder="🔍 Buscar folio, mesa, concepto...">
+                </div>
+            </div>
+            <p class="admin-hint" id="audit-count" style="margin: 0 0 10px;"></p>
             <div class="table-responsive">
                 <table class="corte-table">
-                    <thead><tr><th>ID</th><th>Acción Realizada</th><th>Detalles</th><th>Usuario</th><th>Fecha y Hora</th></tr></thead>
+                    <thead><tr><th>Hora</th><th>Movimiento</th><th>Detalles</th><th>Usuario</th></tr></thead>
                     <tbody id="full-audit-tbody"></tbody>
                 </table>
             </div>

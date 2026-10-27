@@ -640,35 +640,92 @@ function clearTableSelection() {
     closeMobileSheet();
 }
 
+// Nombre legible, estilo y grupos de cada movimiento de auditoría
+const AUDIT_ACTIONS = {
+    CREAR_ORDEN:             { label: 'Orden abierta',        cls: 't-order', groups: ['ordenes'] },
+    AGREGAR_ITEMS:           { label: 'Platillos agregados',  cls: 't-order', groups: ['ordenes'] },
+    CANCELAR_PLATILLO:       { label: 'Platillo cancelado',   cls: 't-alert', groups: ['ordenes', 'importantes'] },
+    CANCELAR_ORDEN_COMPLETA: { label: 'Orden cancelada',      cls: 't-alert', groups: ['ordenes', 'importantes'] },
+    DESCUENTO_APLICADO:      { label: 'Descuento',            cls: 't-alert', groups: ['ordenes', 'dinero', 'importantes'] },
+    REABRIR_CUENTA:          { label: 'Cuenta reabierta',     cls: 't-alert', groups: ['ordenes', 'importantes'] },
+    GASTO_REGISTRADO:        { label: 'Gasto / retiro',       cls: 't-money', groups: ['dinero'] },
+    ELIMINAR_GASTO:          { label: 'Gasto eliminado',      cls: 't-alert', groups: ['dinero', 'importantes'] },
+    CONTEO_CAJA:             { label: 'Conteo de caja',       cls: 't-money', groups: ['dinero'] },
+    CAMBIO_PIN:              { label: 'Cambio de PIN',        cls: 't-alert', groups: ['importantes'] },
+};
+const auditInfo = (action) => AUDIT_ACTIONS[action] || { label: action, cls: '', groups: [] };
+let auditLogs = [];
+let auditGroup = 'todos';
+
 async function loadFullAuditLogs() {
     const auditDatePicker = document.getElementById('audit-date-picker');
-    
+
     // Si el calendario está vacío, ponle la fecha de HOY en automático
-    if (auditDatePicker && !auditDatePicker.value) { 
-        auditDatePicker.value = obtenerFechaLocal(); 
+    if (auditDatePicker && !auditDatePicker.value) {
+        auditDatePicker.value = obtenerFechaLocal();
     }
-    
+
     const dateVal = auditDatePicker ? auditDatePicker.value : obtenerFechaLocal();
-    const tbody = document.getElementById('full-audit-tbody'); 
-    if (!tbody) return;
-    
-    try { 
+    try {
         // Le mandamos la fecha seleccionada al servidor en la URL
-        const response = await fetch(`/api/reports/audit?date=${dateVal}`); 
-        const data = await response.json(); 
-        
-        tbody.innerHTML = ''; 
-        if (data.logs && data.logs.length > 0) { 
-            data.logs.forEach(log => { 
-                tbody.innerHTML += `<tr><td>#${log.id}</td><td><span style="background: #2c2c2c; padding: 2px 6px; border-radius: 4px; font-weight: bold; font-size: 11px;">${log.action}</span></td><td>${log.details}</td><td>${log.performed_by || 'N/A'}</td><td>${log.created_at}</td></tr>`; 
-            }); 
-        } else { 
-            tbody.innerHTML = `<tr><td colspan="5" style="text-align: center;">No hay registros de auditoría para este día.</td></tr>`; 
-        } 
-    } catch (error) { 
-        console.error('Error al cargar auditoría:', error); 
+        const response = await fetch(`/api/reports/audit?date=${dateVal}`);
+        const data = await response.json();
+        auditLogs = data.logs || [];
+
+        // Usuarios del día para el filtro (se conserva la elección si sigue existiendo)
+        const userSel = document.getElementById('audit-user-filter');
+        if (userSel) {
+            const prev = userSel.value;
+            const users = [...new Set(auditLogs.map(l => l.performed_by || 'N/A'))].sort();
+            userSel.innerHTML = `<option value="">Todos los usuarios</option>` + users.map(u => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
+            userSel.value = users.includes(prev) ? prev : '';
+        }
+        renderAuditLogs();
+    } catch (error) {
+        console.error('Error al cargar auditoría:', error);
     }
 }
+
+function renderAuditLogs() {
+    const tbody = document.getElementById('full-audit-tbody');
+    if (!tbody) return;
+    const user = (document.getElementById('audit-user-filter') || {}).value || '';
+    const text = ((document.getElementById('audit-search') || {}).value || '').trim().toLowerCase();
+
+    const importantes = auditLogs.filter(l => auditInfo(l.action).groups.includes('importantes')).length;
+    const chipAlert = document.querySelector('.audit-chip[data-group="importantes"]');
+    if (chipAlert) chipAlert.textContent = importantes ? `⚠️ Importantes (${importantes})` : '⚠️ Importantes';
+    document.querySelectorAll('.audit-chip').forEach(c => c.classList.toggle('active', c.dataset.group === auditGroup));
+
+    const rows = auditLogs.filter(l => {
+        const info = auditInfo(l.action);
+        if (auditGroup !== 'todos' && !info.groups.includes(auditGroup)) return false;
+        if (user && (l.performed_by || 'N/A') !== user) return false;
+        if (text && !`${info.label} ${l.action} ${l.details || ''} ${l.performed_by || ''}`.toLowerCase().includes(text)) return false;
+        return true;
+    });
+
+    const count = document.getElementById('audit-count');
+    if (count) count.textContent = auditLogs.length ? `Mostrando ${rows.length} de ${auditLogs.length} movimientos del día.` : '';
+
+    if (!rows.length) {
+        tbody.innerHTML = `<tr><td colspan="4" style="text-align: center;">${auditLogs.length ? 'Ningún movimiento coincide con el filtro.' : 'No hay registros de auditoría para este día.'}</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = rows.map(log => {
+        const info = auditInfo(log.action);
+        const hora = (log.created_at || '').split(' ')[1] || log.created_at || '';
+        return `<tr class="${info.groups.includes('importantes') ? 'audit-row-alert' : ''}"><td style="white-space: nowrap;">${escapeHtml(hora.slice(0, 5))}</td><td><span class="audit-tag ${info.cls}" title="${escapeHtml(log.action)}">${escapeHtml(info.label)}</span></td><td>${escapeHtml(log.details || '')}</td><td>${escapeHtml(log.performed_by || 'N/A')}</td></tr>`;
+    }).join('');
+}
+
+window.setAuditGroup = function(group) { auditGroup = group; renderAuditLogs(); };
+window.moverDiaAuditoria = function(dias) {
+    const picker = document.getElementById('audit-date-picker');
+    if (!picker) return;
+    picker.value = desplazarFecha(picker.value || obtenerFechaLocal(), dias);
+    loadFullAuditLogs();
+};
 
 async function loadModifiers() { try { const response = await fetch('/api/catalog/modifiers'); const data = await response.json(); currentModifiers = data.modifiers; const adminModifiersList = document.getElementById('admin-modifiers-list'); if (adminModifiersList) { adminModifiersList.innerHTML = ''; currentModifiers.forEach(m => { const displayPrice = m.price > 0 ? ` (+$${m.price})` : ''; adminModifiersList.innerHTML += `<span style="background: #2c2c2c; padding: 4px 8px; border-radius: 4px; border: 1px solid #444; display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: bold;">${m.name}${displayPrice} <button onclick="deleteModifier(${m.id})" style="background: #c39bd3; color: white; border: none; border-radius: 3px; padding: 2px 6px; cursor: pointer;">✕</button></span>`; }); } } catch (error) { console.error('Error:', error); } }
 

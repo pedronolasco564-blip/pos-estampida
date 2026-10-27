@@ -644,3 +644,25 @@ describe('Categorías editables', () => {
         assert.equal((await fetch(`${testBaseUrl}/api/catalog/categories/${a2.id}`, { method: 'DELETE', headers: { Authorization: '' } })).status, 401);
     });
 });
+
+describe('Auditoría con hora local', () => {
+    test('Los movimientos de órdenes se registran con la hora local, igual que los gastos', async () => {
+        const stamp = Date.now();
+        const tableId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`AUD_${stamp}`])).lastID;
+        const prod = await dbGet('SELECT id FROM products LIMIT 1');
+        const res = await fetch(`${testBaseUrl}/api/orders`, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: prod.id, quantity: 1 }], is_printed: false }) });
+        const { orderId } = await res.json();
+        try {
+            const row = await dbGet(`SELECT created_at, details,
+                ABS(strftime('%s', created_at) - strftime('%s', datetime('now', '-6 hours'))) AS diff
+                FROM audit_logs WHERE action = 'CREAR_ORDEN' ORDER BY id DESC LIMIT 1`);
+            assert.ok(row.diff < 120, `hora registrada ${row.created_at}`);
+            assert.ok(row.details.includes(`AUD_${stamp}`), 'muestra el nombre de la mesa');
+        } finally {
+            await dbRun('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+            await dbRun('DELETE FROM orders WHERE id = ?', [orderId]);
+            await dbRun('DELETE FROM tables WHERE id = ?', [tableId]);
+        }
+    });
+});

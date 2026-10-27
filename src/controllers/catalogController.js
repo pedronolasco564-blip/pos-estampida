@@ -381,7 +381,7 @@ const changePin = async (req, res) => {
         const newHash = await hashPin(new_pin);
         await dbRun(`UPDATE settings SET value = ? WHERE key = 'admin_pin'`, [newHash]);
         await dbRun(
-            `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+            `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
             ['CAMBIO_PIN', 'La clave de Administrador fue actualizada.', 'Admin']
         );
 

@@ -85,6 +85,11 @@ function initDatabase() {
         db.run(`INSERT OR IGNORE INTO settings (key, value)
                 SELECT 'folio_seq_C', COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'orders'), (SELECT MAX(id) FROM orders), 0)`);
         db.run(`ALTER TABLE orders ADD COLUMN card_amount REAL DEFAULT 0`, () => {});
+        // Auditoría: órdenes y cambio de PIN se guardaban en UTC (6 h adelantadas); se corrigen una sola vez.
+        db.run(`UPDATE audit_logs SET created_at = datetime(created_at, '-6 hours')
+                WHERE action IN ('CREAR_ORDEN', 'AGREGAR_ITEMS', 'CANCELAR_PLATILLO', 'CANCELAR_ORDEN_COMPLETA', 'DESCUENTO_APLICADO', 'REABRIR_CUENTA', 'CAMBIO_PIN')
+                  AND NOT EXISTS (SELECT 1 FROM settings WHERE key = 'audit_hora_local')`);
+        db.run(`INSERT OR IGNORE INTO settings (key, value) VALUES ('audit_hora_local', '1')`);
 
         // 📊 ÍNDICES para acelerar consultas frecuentes
         db.run(`CREATE INDEX IF NOT EXISTS idx_orders_table_status ON orders(table_id, status)`);

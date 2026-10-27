@@ -3,6 +3,13 @@ const { emitUpdate } = require('../utils/emitUpdate');
 const { emitDraft } = require('./draftController');
 const { folioSql, nextFolio, orderFolio } = require('../utils/folio');
 
+// Nombre visible de la mesa para los mensajes de auditoría (ej. "Mesa 07", "PARA LLEVAR 1")
+async function mesaNombre(tableId) {
+    const t = await dbGet(`SELECT table_number FROM tables WHERE id = ?`, [tableId]);
+    if (!t) return `Mesa ID ${tableId}`;
+    return /^\d+$/.test(t.table_number) ? `Mesa ${t.table_number}` : t.table_number;
+}
+
 /**
  * Reutilizable: Hidrata una orden con sus platillos asociados.
  */
@@ -123,8 +130,8 @@ const createOrder = async (req, res) => {
             await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [table_id]);
 
             await dbRun(
-                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['CREAR_ORDEN', `Orden ${folio.label} abierta en Mesa ID ${table_id}${printNote}`, waiter_name]
+                `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
+                ['CREAR_ORDEN', `Orden ${folio.label} abierta en ${await mesaNombre(table_id)}${printNote}`, waiter_name]
             );
 
             return newOrderId;
@@ -177,7 +184,7 @@ const addItemsToOrder = async (req, res) => {
                 await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [draftTableId]);
             }
             await dbRun(
-                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
                 ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden ${await orderFolio(id)}${printNote}`, waiter]
             );
         });
@@ -304,8 +311,8 @@ const cancelItem = async (req, res) => {
             await dbRun(query, [itemId, orderId]);
             await updateOrderTotal(orderId);
             await dbRun(
-                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['CANCELAR_PLATILLO', `Se canceló 1x "${item.name}". Motivo: ${reason || 'N/A'}`, 'Admin']
+                `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
+                ['CANCELAR_PLATILLO', `Se canceló 1x "${item.name}" de la Orden ${await orderFolio(orderId)}. Motivo: ${reason || 'N/A'}`, 'Admin']
             );
         });
 
@@ -329,14 +336,15 @@ const cancelOrder = async (req, res) => {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
         const folioCancelado = await orderFolio(id);
+        const mesaCancelada = await mesaNombre(order.table_id);
 
         await dbTransaction(async () => {
             await dbRun(`DELETE FROM order_items WHERE order_id = ?`, [id]);
             await dbRun(`DELETE FROM orders WHERE id = ?`, [id]);
             await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
             await dbRun(
-                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden ${folioCancelado} de la Mesa ID ${order.table_id}. Motivo: ${reason || 'N/A'}`, 'Administrador']
+                `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
+                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden ${folioCancelado} de ${mesaCancelada}. Motivo:${reason || 'N/A'}`, 'Administrador']
             );
         });
 
@@ -388,7 +396,7 @@ const applyDiscount = async (req, res) => {
         await dbTransaction(async () => {
             await dbRun(`UPDATE orders SET discount_amount = ? WHERE id = ?`, [numericDiscount, id]);
             await dbRun(
-                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
                 ['DESCUENTO_APLICADO', `Descuento de $${numericDiscount} aplicado a la Orden ${await orderFolio(id)}`, 'Administrador']
             );
             await updateOrderTotal(id);
@@ -421,7 +429,7 @@ const reopenOrder = async (req, res) => {
             );
             await dbRun(`UPDATE order_items SET paid = 0 WHERE order_id = ?`, [id]);
             await dbRun(
-                `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
+                `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
                 ['REABRIR_CUENTA', `Cuenta ${await orderFolio(id)} reabierta por administrador. Pagos anulados.`, 'Administrador']
             );
         });
