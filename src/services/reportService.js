@@ -1,4 +1,5 @@
 const { dbAll } = require('../utils/dbHelper');
+const { folioSql } = require('../utils/folio');
 
 /**
  * Calcula los totales, desgloses y métricas del corte de caja para una fecha determinada.
@@ -8,7 +9,7 @@ const { dbAll } = require('../utils/dbHelper');
  */
 async function calculateCorteData(targetDate) {
     const ordersQuery = `
-        SELECT o.*, t.table_number 
+        SELECT o.*, t.table_number, ${folioSql('o')} AS folio
         FROM orders o 
         JOIN tables t ON o.table_id = t.id 
         WHERE o.status = 'PAGADA' AND DATE(o.closed_at) = ?

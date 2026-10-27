@@ -1,6 +1,7 @@
 const { dbGet, dbAll, dbRun, dbTransaction } = require('../utils/dbHelper');
 const { emitUpdate } = require('../utils/emitUpdate');
 const { emitDraft } = require('./draftController');
+const { folioSql, nextFolio, orderFolio } = require('../utils/folio');
 
 /**
  * Reutilizable: Hidrata una orden con sus platillos asociados.
@@ -56,7 +57,7 @@ async function updateOrderTotal(orderId) {
 const getTableOrder = async (req, res) => {
     try {
         const { tableId } = req.params;
-        const order = await dbGet(`SELECT * FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [tableId]);
+        const order = await dbGet(`SELECT o.*, ${folioSql('o')} AS folio FROM orders o WHERE o.table_id = ? AND o.status = 'ABIERTA'`, [tableId]);
         if (!order) {
             return res.json({ order: null });
         }
@@ -72,7 +73,7 @@ const getTableOrder = async (req, res) => {
 const getOrderById = async (req, res) => {
     try {
         const { id } = req.params;
-        const order = await dbGet(`SELECT * FROM orders WHERE id = ?`, [id]);
+        const order = await dbGet(`SELECT o.*, ${folioSql('o')} AS folio FROM orders o WHERE o.id = ?`, [id]);
         if (!order) {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
@@ -90,11 +91,13 @@ const createOrder = async (req, res) => {
     const printNote = is_printed === false ? ' (Ahorro papel: Sin imprimir)' : '';
 
     try {
+        let folio = null;
         const orderId = await dbTransaction(async () => {
             await dbRun(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [table_id]);
+            folio = await nextFolio(table_id);
             const orderRes = await dbRun(
-                `INSERT INTO orders (table_id, waiter_name, guests) VALUES (?, ?, ?)`,
-                [table_id, waiter_name, guests]
+                `INSERT INTO orders (table_id, waiter_name, guests, folio_type, folio_num) VALUES (?, ?, ?, ?, ?)`,
+                [table_id, waiter_name, guests, folio.type, folio.num]
             );
             const newOrderId = orderRes.lastID;
 
@@ -121,7 +124,7 @@ const createOrder = async (req, res) => {
 
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['CREAR_ORDEN', `Orden #${newOrderId} abierta en Mesa ID ${table_id}${printNote}`, waiter_name]
+                ['CREAR_ORDEN', `Orden ${folio.label} abierta en Mesa ID ${table_id}${printNote}`, waiter_name]
             );
 
             return newOrderId;
@@ -130,7 +133,7 @@ const createOrder = async (req, res) => {
         emitDraft(req, { table_id: Number(table_id), items: [], sent: true, device_id: String(req.body.device_id || '') });
         emitUpdate(req);
 
-        res.status(201).json({ message: 'Orden creada', orderId });
+        res.status(201).json({ message: 'Orden creada', orderId, folio: folio.label });
     } catch (err) {
         console.error('[OrderController]', err);
         res.status(500).json({ error: 'Error interno del servidor.' });
@@ -175,7 +178,7 @@ const addItemsToOrder = async (req, res) => {
             }
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden #${id}${printNote}`, waiter]
+                ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden ${await orderFolio(id)}${printNote}`, waiter]
             );
         });
 
@@ -325,6 +328,7 @@ const cancelOrder = async (req, res) => {
         if (!order) {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
+        const folioCancelado = await orderFolio(id);
 
         await dbTransaction(async () => {
             await dbRun(`DELETE FROM order_items WHERE order_id = ?`, [id]);
@@ -332,7 +336,7 @@ const cancelOrder = async (req, res) => {
             await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden #${id} de la Mesa ID ${order.table_id}. Motivo: ${reason || 'N/A'}`, 'Administrador']
+                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden ${folioCancelado} de la Mesa ID ${order.table_id}. Motivo: ${reason || 'N/A'}`, 'Administrador']
             );
         });
 
@@ -385,7 +389,7 @@ const applyDiscount = async (req, res) => {
             await dbRun(`UPDATE orders SET discount_amount = ? WHERE id = ?`, [numericDiscount, id]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['DESCUENTO_APLICADO', `Descuento de $${numericDiscount} aplicado a la Orden #${id}`, 'Administrador']
+                ['DESCUENTO_APLICADO', `Descuento de $${numericDiscount} aplicado a la Orden ${await orderFolio(id)}`, 'Administrador']
             );
             await updateOrderTotal(id);
         });
@@ -418,7 +422,7 @@ const reopenOrder = async (req, res) => {
             await dbRun(`UPDATE order_items SET paid = 0 WHERE order_id = ?`, [id]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by) VALUES (?, ?, ?)`,
-                ['REABRIR_CUENTA', `Cuenta #${id} reabierta por administrador. Pagos anulados.`, 'Administrador']
+                ['REABRIR_CUENTA', `Cuenta ${await orderFolio(id)} reabierta por administrador. Pagos anulados.`, 'Administrador']
             );
         });
 

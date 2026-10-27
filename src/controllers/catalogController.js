@@ -1,5 +1,6 @@
 const { dbGet, dbAll, dbRun } = require('../utils/dbHelper');
 const { emitUpdate } = require('../utils/emitUpdate');
+const { folioSql } = require('../utils/folio');
 const { verifyAdminPin, hashPin } = require('../middleware/verifyPin');
 const { createSession, destroySession, getToken } = require('../middleware/adminSession');
 
@@ -15,13 +16,14 @@ const getTables = async (req, res) => {
                 o.remaining_balance,
                 CAST((julianday('now') - julianday(o.created_at)) * 24 * 60 AS INTEGER) AS minutes_open,
                 o.id AS active_folio,
+                o.folio AS active_folio_label,
                 o.waiter_name,
                 d.items IS NOT NULL AS has_draft,
                 d.waiter_name AS draft_waiter
             FROM tables t
             LEFT JOIN order_drafts d ON d.table_id = t.id
             LEFT JOIN (
-                SELECT table_id, id, total, remaining_balance, created_at, waiter_name
+                SELECT table_id, id, total, remaining_balance, created_at, waiter_name, ${folioSql('orders')} AS folio
                 FROM orders
                 WHERE status = 'ABIERTA'
                 GROUP BY table_id

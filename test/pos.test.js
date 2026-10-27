@@ -522,3 +522,68 @@ describe('Conteo de caja y reporte mensual', () => {
         assert.equal(res.status, 401);
     });
 });
+
+describe('Folios separados: comedor (#N) y para llevar (LL-0001)', () => {
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const created = [];
+    let comedorId, llevarId, productId;
+
+    before(async () => {
+        const stamp = Date.now();
+        comedorId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`FOLIO_C_${stamp}`])).lastID;
+        llevarId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`LLEVAR FOLIO ${stamp}`])).lastID;
+        const prod = await dbGet('SELECT id FROM products LIMIT 1');
+        productId = prod ? prod.id : (await dbRun(`INSERT INTO products (name, price, station) VALUES ('Prueba', 50, 'COCINA')`)).lastID;
+    });
+
+    after(async () => {
+        for (const id of created) {
+            await dbRun('DELETE FROM order_items WHERE order_id = ?', [id]);
+            await dbRun('DELETE FROM orders WHERE id = ?', [id]);
+        }
+        await dbRun('DELETE FROM tables WHERE id IN (?, ?)', [comedorId, llevarId]);
+    });
+
+    const crear = async (tableId) => {
+        const res = await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 1 }], is_printed: false }));
+        assert.equal(res.status, 201);
+        const r = await res.json();
+        created.push(r.orderId);
+        return r;
+    };
+    const cobrar = async (orderId) => {
+        const ord = (await (await fetch(`${testBaseUrl}/api/orders/${orderId}`)).json()).order;
+        await fetch(`${testBaseUrl}/api/orders/${orderId}/pay`, json('POST', { payment_method: 'EFECTIVO', amount_paid: ord.total }));
+    };
+
+    test('Para llevar usa LL-#### y comedor su propio número, sin huecos entre sí', async () => {
+        const c1 = await crear(comedorId); await cobrar(c1.orderId);
+        const l1 = await crear(llevarId); await cobrar(l1.orderId);
+        const l2 = await crear(llevarId); await cobrar(l2.orderId);
+        const c2 = await crear(comedorId);
+
+        assert.match(c1.folio, /^#\d+$/);
+        assert.match(l1.folio, /^LL-\d{4}$/);
+        assert.equal(Number(l2.folio.slice(3)), Number(l1.folio.slice(3)) + 1);
+        // Los pedidos para llevar de en medio no dejan hueco en el comedor
+        assert.equal(Number(c2.folio.slice(1)), Number(c1.folio.slice(1)) + 1);
+    });
+
+    test('El folio aparece en la cuenta, la mesa y el corte', async () => {
+        const order = (await (await fetch(`${testBaseUrl}/api/orders/table/${comedorId}`)).json()).order;
+        assert.match(order.folio, /^#\d+$/);
+        const table = (await (await fetch(`${testBaseUrl}/api/catalog/tables`)).json()).tables.find(t => t.id === comedorId);
+        assert.equal(table.active_folio_label, order.folio);
+        const today = (await dbGet(`SELECT date('now', '-6 hours') AS d`)).d;
+        const corte = await (await fetch(`${testBaseUrl}/api/reports/corte?date=${today}`)).json();
+        assert.ok(corte.orders.some(o => /^LL-\d{4}$/.test(o.folio)), 'el corte muestra folios LL-');
+    });
+
+    test('Un folio cancelado no se vuelve a usar', async () => {
+        const c = await crear(llevarId);
+        const cancel = await fetch(`${testBaseUrl}/api/orders/${c.orderId}/cancel-order`, json('POST', { pin: '1234', reason: 'PRUEBA' }));
+        assert.equal(cancel.status, 200);
+        const siguiente = await crear(llevarId);
+        assert.equal(Number(siguiente.folio.slice(3)), Number(c.folio.slice(3)) + 1);
+    });
+});

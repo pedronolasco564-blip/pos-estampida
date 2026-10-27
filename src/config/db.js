@@ -71,6 +71,15 @@ function initDatabase() {
         
         // 💡 REPARACIÓN: Columnas para rastrear pagos mixtos
         db.run(`ALTER TABLE orders ADD COLUMN cash_amount REAL DEFAULT 0`, () => {});
+        // Folio propio por tipo: 'C' comedor (#35) y 'L' para llevar (LL-0001)
+        db.run(`ALTER TABLE orders ADD COLUMN folio_type TEXT`, () => {});
+        db.run(`ALTER TABLE orders ADD COLUMN folio_num INTEGER`, () => {
+            db.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_orders_folio ON orders(folio_type, folio_num) WHERE folio_num IS NOT NULL`);
+        });
+        // El comedor continúa después del último número usado por el sistema anterior (incluye órdenes canceladas,
+        // para no repetir números que ya aparecen en la auditoría). Solo se fija la primera vez.
+        db.run(`INSERT OR IGNORE INTO settings (key, value)
+                SELECT 'folio_seq_C', COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'orders'), (SELECT MAX(id) FROM orders), 0)`);
         db.run(`ALTER TABLE orders ADD COLUMN card_amount REAL DEFAULT 0`, () => {});
 
         // 📊 ÍNDICES para acelerar consultas frecuentes

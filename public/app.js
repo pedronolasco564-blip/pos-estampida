@@ -168,7 +168,8 @@ const target = document.getElementById(viewId);
     }
 }
 
-let currentTableId = null; let currentOrderId = null; let savedOrderItems = []; let newOrderItems = []; let allProducts = []; let lastSelectedWaiter = ''; let currentModifiers = []; let currentRemainingBalance = 0; let selectedItemsToPay = []; let lastPaymentFullyPaid = false; let pendingCancelType = null; let pendingCancelItemId = null; let isReprinting = false; let productClicks = {};
+let currentFolio = null; // etiqueta del folio de la cuenta abierta (#35 comedor, LL-0012 para llevar)
+let currentTableId = null; let currentOrderId = null;let savedOrderItems = []; let newOrderItems = []; let allProducts = []; let lastSelectedWaiter = ''; let currentModifiers = []; let currentRemainingBalance = 0; let selectedItemsToPay = []; let lastPaymentFullyPaid = false; let pendingCancelType = null; let pendingCancelItemId = null; let isReprinting = false; let productClicks = {};
 let desgloseGastosActual = [];
 
 let tableInstructions = {};
@@ -634,7 +635,7 @@ document.getElementById('btn-close-admin').onclick = () => { setView('admin-hub-
 document.getElementById('btn-close-audit').onclick = () => { setView('admin-hub-view'); };
 
 function clearTableSelection() {
-    draftTableId = null; currentTableId = null; currentOrderId = null; currentTableSpan.textContent = 'Ninguna'; btnDeselectTable.style.display = 'none'; btnTransferTable.style.display = 'none'; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; waiterSelect.disabled = false; waiterSelect.style.backgroundColor = '#2a2a2a'; waiterSelect.style.color = '#fff'; if(waiterSelect.previousElementSibling) waiterSelect.previousElementSibling.innerHTML = 'Mesero en Turno:'; updateOrderUI();
+    draftTableId = null; currentTableId = null; currentOrderId = null; currentFolio = null;currentTableSpan.textContent = 'Ninguna'; btnDeselectTable.style.display = 'none'; btnTransferTable.style.display = 'none'; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; waiterSelect.disabled = false; waiterSelect.style.backgroundColor = '#2a2a2a'; waiterSelect.style.color = '#fff'; if(waiterSelect.previousElementSibling) waiterSelect.previousElementSibling.innerHTML = 'Mesero en Turno:'; updateOrderUI();
     document.querySelectorAll('.btn-table').forEach(b => b.classList.remove('selected'));
     closeMobileSheet();
 }
@@ -817,7 +818,7 @@ async function loadTables() {
                 
                 // Etiqueta dinámica de Folio (solo aparece si el backend lo manda)
                 const etiquetaFolio = table.active_folio 
-                    ? `<div style="background: #e74c3c; color: #fff; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin: 4px 0 0 0;">Folio: #${table.active_folio}</div>` 
+                    ? `<div style="background: #e74c3c; color: #fff; font-size: 10px; font-weight: bold; padding: 2px 6px; border-radius: 4px; margin: 4px 0 0 0;">Folio: ${escapeHtml(table.active_folio_label || '#' + table.active_folio)}</div>` 
                     : '';
 
                 const badgeSemaforo = `<div class="badge-time ${timeClass}"><span>${timeIcon}</span> <span>${mins}m</span></div>`;
@@ -897,14 +898,14 @@ async function selectTable(table) {
     // 2. Iluminamos solo la mesa que acabamos de tocar
     const activeBtn = document.querySelector(`.btn-table[data-id="${table.id}"]`);
     if (activeBtn) activeBtn.classList.add('selected');
-    draftTableId = null; currentTableId = table.id; currentTableSpan.textContent = table.table_number; btnDeselectTable.style.display = 'inline-block'; currentOrderId = null; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; const waiterLabel = waiterSelect.previousElementSibling;
+    draftTableId = null; currentFolio = null; currentTableId = table.id; currentTableSpan.textContent = table.table_number;btnDeselectTable.style.display = 'inline-block'; currentOrderId = null; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; const waiterLabel = waiterSelect.previousElementSibling;
 
     if (table.status === 'OCUPADA') {
         clienteLlevarActual = null; 
         const response = await fetch(`/api/orders/table/${table.id}`); const data = await response.json();
         if (data.order) {
             currentPax = data.order.guests || 1;
-            currentOrderId = data.order.id; savedOrderItems = data.order.items; currentRemainingBalance = data.order.remaining_balance !== null ? data.order.remaining_balance : data.order.total;
+            currentOrderId = data.order.id; currentFolio = data.order.folio || `#${data.order.id}`; savedOrderItems = data.order.items;currentRemainingBalance = data.order.remaining_balance !== null ? data.order.remaining_balance : data.order.total;
             if (data.order.waiter_name) { waiterSelect.value = data.order.waiter_name; lastSelectedWaiter = data.order.waiter_name; }
             waiterSelect.disabled = true; waiterSelect.style.backgroundColor = '#1e372b'; waiterSelect.style.color = '#2ecc71'; if(waiterLabel) waiterLabel.innerHTML = '👤 Mesero Titular (Protegido):';
             if (data.order.discount_amount && data.order.discount_amount > 0) { document.getElementById('pay-discount-display-container').style.display = 'block'; document.getElementById('pay-discount-display').textContent = data.order.discount_amount.toFixed(2); }
@@ -1177,7 +1178,8 @@ async function sendOrderToServer(shouldPrint) {
             triggerHaptic(60);
             closeMobileSheet();
             if (!orderNum) orderNum = result.orderId; 
-            if (shouldPrint) { showComanda(itemsToPrint, orderNum, currentTableSpan.textContent, selectedWaiter); } 
+            const folioComanda = result.folio || currentFolio || `#${orderNum}`;
+            if (shouldPrint) { showComanda(itemsToPrint, folioComanda, currentTableSpan.textContent, selectedWaiter); } 
             else { await customAlert('Adición registrada.', 'success'); } 
             selectTable({ id: currentTableId, table_number: currentTableSpan.textContent, status: 'OCUPADA' }); loadTables(); 
         }
@@ -1193,12 +1195,12 @@ async function sendOrderToServer(shouldPrint) {
 
 btnSendPrint.onclick = () => sendOrderToServer(true); btnSendSave.onclick = () => sendOrderToServer(false);
 
-function showComanda(items, orderId, mesa, mesero) {
+function showComanda(items, folio, mesa, mesero) {
     let time = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit' });
     
     let encabezadoHTML = mesa.toUpperCase().includes('LLEVAR')
-        ? `<div style="background: #000; color: #fff; text-align: center; padding: 6px; font-size: 16px; font-weight: 900; border: 2px dashed #000; margin-bottom: 10px;">¡PEDIDO PARA LLEVAR!</div><div style="display: flex; justify-content: space-between; font-weight: bold;"><span>COMANDA #${orderId.toString().padStart(5, '0')}</span><span>${mesa}</span></div>`
-        : `<div style="display: flex; justify-content: space-between; font-weight: bold;"><span>COMANDA #${orderId.toString().padStart(5, '0')}</span><span>MESA ${mesa}</span></div>`;
+        ? `<div style="background: #000; color: #fff; text-align: center; padding: 6px; font-size: 16px; font-weight: 900; border: 2px dashed #000; margin-bottom: 10px;">¡PEDIDO PARA LLEVAR!</div><div style="display: flex; justify-content: space-between; font-weight: bold;"><span>COMANDA ${escapeHtml(folio)}</span><span>${mesa}</span></div>`
+        : `<div style="display: flex; justify-content: space-between; font-weight: bold;"><span>COMANDA ${escapeHtml(folio)}</span><span>MESA ${mesa}</span></div>`;
 
     const itemsCocina = items.filter(item => item.station === 'COCINA'); const itemsBarra = items.filter(item => item.station === 'BARRA');
     
@@ -1437,7 +1439,7 @@ function showTicket(amountPaid, change, method, fullyPaid, remainingBalance, tip
         <!-- DATOS DE LA MESA -->
         <div style="margin-bottom: 10px; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 5px 0;">
             <div style="display: flex; justify-content: space-between; font-weight: 900; font-size: 14px;">
-                <span>FOLIO: #${(orderIdNum || 0).toString().padStart(5, '0')}</span>
+                <span>FOLIO: ${escapeHtml(currentFolio || '#' + (orderIdNum || 0))}</span>
                 <span>MESA: ${currentTableSpan.textContent}</span>
             </div>
             <div style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px;">
@@ -1544,7 +1546,7 @@ function showTicket(amountPaid, change, method, fullyPaid, remainingBalance, tip
         <div style="text-align: center;">
             <p style="font-size: 12px; font-weight: bold; margin-bottom: 5px;">¿REQUIERE FACTURA?</p>
             <div style="width: 100px; height: 100px; border: 2px solid #000; margin: 0 auto; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #555; background-color: #eee;">[ 🔲 QR FACTURA ]</div>
-            <p style="font-size: 11px; margin-top: 5px;">Escanee e ingrese el TICKET #${(orderIdNum || 0).toString().padStart(5, '0')}</p>
+            <p style="font-size: 11px; margin-top: 5px;">Escanee e ingrese el TICKET ${escapeHtml(currentFolio || '#' + (orderIdNum || 0))}</p>
         </div>`; 
     } 
     
@@ -1640,7 +1642,7 @@ function showReprintTicket(order, tableNumber) {
         <p style="margin: 3px 0; font-size: 12px; text-align: center;">Blvd Francisco Fernández Arteaga #2096</p>
         <p style="margin: 3px 0; font-size: 12px; text-align: center;">Tuxtepec, Oaxaca</p>
         <p style="margin: 3px 0; font-size: 12px; text-align: center;">Fecha Cierre: ${date}</p>
-        <p style="margin: 8px 0 5px 0; font-size: 15px; font-weight: bold; color: #000; text-align: center;">TICKET #${order.id.toString().padStart(5, '0')} <span style="font-size: 10px; color:#555;">(Reimpresión)</span></p>
+        <p style="margin: 8px 0 5px 0; font-size: 15px; font-weight: bold; color: #000; text-align: center;">TICKET ${escapeHtml(order.folio || '#' + order.id)} <spanstyle="font-size: 10px; color:#555;">(Reimpresión)</span></p>
         <div style="display: flex; justify-content: space-between; font-size: 12px; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 4px 0; margin: 6px 0;">
             <span>Mesa: ${tableNumber}</span>
             <span>Mesero: ${order.waiter_name}</span>
@@ -2052,7 +2054,7 @@ async function loadCorteData() {
                 }
 
                 tbody.innerHTML += `<tr>
-                    <td>#${o.id}</td>
+                    <td><b>${escapeHtml(o.folio || '#' + o.id)}</b></td>
                     <td>Mesa ${o.table_number}</td>
                     <td>${o.waiter_name}</td>
                     <td>${o.payment_method}</td>
@@ -2217,7 +2219,7 @@ function generatePreCheckHTML(itemsArray, title, fraction = 1, showQR = false, d
         <!-- DATOS DE LA MESA (FOLIO Y PAX DESTACADOS) -->
         <div style="margin-bottom: 10px; border-top: 1px dashed #000; border-bottom: 1px dashed #000; padding: 5px 0;">
             <div style="display: flex; justify-content: space-between; font-weight: 900; font-size: 14px;">
-                <span>FOLIO: #${(currentOrderId || 0).toString().padStart(5, '0')}</span>
+                <span>FOLIO: ${escapeHtml(currentFolio || '#' + (currentOrderId || 0))}</span>
                 <span>MESA: ${currentTableSpan.textContent}</span>
             </div>
             <div style="display: flex; justify-content: space-between; font-size: 12px; margin-top: 4px;">
