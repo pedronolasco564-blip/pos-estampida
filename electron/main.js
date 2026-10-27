@@ -51,15 +51,29 @@ function autoBackup(dataDir) {
     } catch (e) { console.error('Respaldo automático falló:', e.message); }
 }
 
-// Actualizaciones desde GitHub Releases. Se descargan solas y se instalan al cerrar el sistema,
-// nunca a media jornada, para no cortar el servicio a los meseros.
+// Actualizaciones desde GitHub Releases. Se descargan solas y se instalan nunca a media jornada:
+// - al arrancar (si ya estaba descargada, se instala en los primeros minutos, antes del servicio);
+// - o cuando el usuario elige "Instalar actualización" en el icono, o al salir del sistema.
+const appStartedAt = Date.now();
+let pendingUpdate = null;
+
 function setupAutoUpdate() {
     if (!app.isPackaged) return;
     const { autoUpdater } = require('electron-updater');
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.on('error', (e) => console.error('Actualizador:', e.message));
     autoUpdater.on('update-downloaded', (info) => {
-        if (tray) tray.setToolTip(`POS La Estampida: v${info.version} se instalará al cerrar el sistema`);
+        if (Date.now() - appStartedAt < 3 * 60 * 1000) {
+            // Recién encendido: se instala ya (tarda unos segundos y el POS vuelve a abrir solo).
+            quitting = true;
+            autoUpdater.quitAndInstall(true, true);
+            return;
+        }
+        pendingUpdate = { version: info.version, install: () => { quitting = true; autoUpdater.quitAndInstall(true, true); } };
+        if (tray) {
+            tray.setToolTip(`POS La Estampida: actualización v${info.version} lista`);
+            buildTrayMenu();
+        }
     });
     const check = () => autoUpdater.checkForUpdates().catch(() => {});
     check();
@@ -149,7 +163,11 @@ async function buildTrayMenu() {
             click: () => { writeConfig({ ...readConfig(), ticketPrinter: p.name }); buildTrayMenu(); }
         }))
         : [{ label: 'No hay impresoras en Windows', enabled: false }];
+    const updateItems = pendingUpdate
+        ? [{ label: `⬆️ Instalar actualización v${pendingUpdate.version} (reinicia el POS)`, click: confirmInstallUpdate }, { type: 'separator' }]
+        : [];
     tray.setContextMenu(Menu.buildFromTemplate([
+        ...updateItems,
         { label: 'Abrir caja', click: () => { mainWindow.show(); mainWindow.focus(); } },
         { label: 'Dirección para celulares', click: showPhoneAddress },
         { label: 'Diagnóstico', click: showDiagnostics },
@@ -206,6 +224,15 @@ async function showDiagnostics() {
         lines.push(`Impresora de comandas (ESC/POS) "${shared}": ${printers.some(p => p.name === shared) ? 'encontrada' : 'NO encontrada en Windows'}`);
     } catch (e) { lines.push(`Impresoras: error (${e.message})`); }
     dialog.showMessageBox(mainWindow, { type: 'info', title: 'Diagnóstico', buttons: ['Cerrar'], message: 'Diagnóstico del sistema', detail: lines.join('\n') });
+}
+
+async function confirmInstallUpdate() {
+    const { response } = await dialog.showMessageBox({
+        type: 'question', buttons: ['Después', 'Instalar ahora'], defaultId: 1, cancelId: 0,
+        title: 'Actualización', message: `¿Instalar la versión ${pendingUpdate.version}?`,
+        detail: 'El POS se cerrará unos segundos y volverá a abrir solo. Los meseros se reconectan al volver.'
+    });
+    if (response === 1) pendingUpdate.install();
 }
 
 async function confirmQuit() {

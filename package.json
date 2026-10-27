@@ -1,6 +1,6 @@
 {
   "name": "pos-v1-pedro",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "POS La Estampida",
   "main": "electron/main.js",
   "scripts": {
@@ -9,7 +9,7 @@
     "test": "node --test",
     "desktop": "electron .",
     "dist": "electron-builder",
-    "release": "electron-builder --win nsis --publish always"
+    "release": "node scripts/release.js"
   },
   "keywords": [],
   "author": "",
