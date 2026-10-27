@@ -1,6 +1,6 @@
 {
   "name": "pos-v1-pedro",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "POS La Estampida",
   "main": "electron/main.js",
   "scripts": {
