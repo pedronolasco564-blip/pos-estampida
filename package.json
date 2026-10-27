@@ -1,6 +1,6 @@
 {
   "name": "pos-v1-pedro",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "POS La Estampida",
   "main": "electron/main.js",
   "scripts": {
@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "test": "node --test",
     "desktop": "electron .",
-    "dist": "electron-builder"
+    "dist": "electron-builder",
+    "release": "electron-builder --win nsis --publish always"
   },
   "keywords": [],
   "author": "",
@@ -55,7 +56,8 @@
       {
         "provider": "github",
         "owner": "pedronolasco564-blip",
-        "repo": "pos-estampida"
+        "repo": "pos-estampida-actualizaciones",
+        "releaseType": "release"
       }
     ],
     "npmRebuild": false
