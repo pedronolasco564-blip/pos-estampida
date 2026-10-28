@@ -69,6 +69,31 @@ async function onceByRequestId(requestId, work) {
     return response;
 }
 
+// Dinero que ya entró a la caja por esta cuenta (abonos en efectivo y tarjeta)
+async function abonadoDe(orderId) {
+    const row = await dbGet(`SELECT IFNULL(cash_amount, 0) + IFNULL(card_amount, 0) AS abonado FROM orders WHERE id = ?`, [orderId]);
+    return row ? round2(row.abonado) : 0;
+}
+
+// Si lo abonado ya cubre la cuenta (se cancelaron platillos o hubo descuento), se cierra como cobrada.
+// Así no queda una cuenta abierta en $0.00 cuya única salida era cancelarla y perder los abonos del corte.
+async function cerrarSiEstaCubierta(orderId) {
+    const o = await dbGet(`SELECT table_id, status, remaining_balance, IFNULL(cash_amount, 0) AS ef, IFNULL(card_amount, 0) AS tj FROM orders WHERE id = ?`, [orderId]);
+    if (!o || o.status !== 'ABIERTA' || toCents(o.remaining_balance) > 0 || toCents(o.ef + o.tj) <= 0) return false;
+    const metodo = o.ef > 0 && o.tj > 0 ? 'MIXTO' : o.ef > 0 ? 'EFECTIVO' : 'TARJETA';
+    await dbRun(
+        `UPDATE orders SET status = 'PAGADA', payment_method = ?, amount_paid = ?, change_amount = 0, remaining_balance = 0,
+         closed_at = datetime('now', '-6 hours') WHERE id = ?`,
+        [metodo, round2(o.ef + o.tj), orderId]
+    );
+    await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [o.table_id]);
+    await dbRun(
+        `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
+        ['CUENTA_CERRADA', `La Orden ${await orderFolio(orderId)} se cerró con lo ya abonado ($${round2(o.ef + o.tj)})`, 'Administrador']
+    );
+    return true;
+}
+
 // Responde con el código del error (400/404/409) o 500 si fue inesperado
 function sendError(res, err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
@@ -358,8 +383,9 @@ const cancelItem = async (req, res) => {
     try {
 
         const item = await dbGet(
-            `SELECT oi.paid, oi.quantity, COALESCE(p.name, '(platillo eliminado)') AS name, o.status
-             FROM order_items oi
+            `SELECT oi.paid, oi.quantity, COALESCE(p.name, '(platillo eliminado)') AS name, o.status, o.remaining_balance,
+                    COALESCE(oi.unit_price, p.price, 0) + IFNULL(oi.extra_price, 0) AS precio
+             FROM order_items oi 
              JOIN orders o ON o.id = oi.order_id
              LEFT JOIN products p ON oi.product_id = p.id
              WHERE oi.id = ? AND oi.order_id = ?`,
@@ -369,7 +395,12 @@ const cancelItem = async (req, res) => {
         if (!item) return res.status(404).json({ error: 'Platillo no encontrado' });
         if (item.status !== 'ABIERTA') return res.status(409).json({ error: 'La cuenta ya fue cobrada.' });
         if (item.paid === 1) return res.status(400).json({ error: 'Ya fue pagado.' });
+        // Con abonos, el saldo pendiente es lo único que se puede quitar: lo demás ya está pagado
+        if ((await abonadoDe(orderId)) > 0 && toCents(item.precio) > toCents(item.remaining_balance)) {
+            return res.status(409).json({ error: `Este platillo ya está cubierto por lo que se abonó (saldo pendiente $${round2(item.remaining_balance)}). Si hay que devolver dinero, regístralo como gasto "Devolución folio ${await orderFolio(orderId)}".` });
+        }
 
+        let cerrada = false;
         await dbTransaction(async () => {
             const query = item.quantity > 1
                 ? `UPDATE order_items SET quantity = quantity - 1 WHERE id = ? AND order_id = ?`
@@ -381,11 +412,12 @@ const cancelItem = async (req, res) => {
                 `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
                 ['CANCELAR_PLATILLO', `Se canceló 1x "${item.name}" de la Orden ${await orderFolio(orderId)}. Motivo: ${reason || 'N/A'}`, 'Admin']
             );
+            cerrada = await cerrarSiEstaCubierta(orderId);
         });
 
         emitUpdate(req);
 
-        res.json({ message: 'Cancelado' });
+        res.json({ message: cerrada ? 'Cancelado. La cuenta quedó cubierta con lo abonado y se cerró.' : 'Cancelado', closed: cerrada });
     } catch (err) {
         console.error('[OrderController]', err);
         res.status(500).json({ error: 'Error interno del servidor.' });
@@ -404,6 +436,10 @@ const cancelOrder = async (req, res) => {
         }
         // Una cuenta cobrada ya está en el corte: borrarla descuadraría la caja
         if (order.status !== 'ABIERTA') return res.status(409).json({ error: 'Esta cuenta ya fue cobrada; no se puede cancelar.' });
+        // Ese dinero ya entró a la caja: cancelarla lo sacaría del corte y el conteo saldría con sobrante
+        if (toCents(order.abonado) > 0) {
+            return res.status(409).json({ error: `Esta cuenta tiene abonos por $${round2(order.abonado)} y no se puede cancelar completa. Cancela los platillos pendientes (la cuenta se cierra sola con lo abonado). Si hay que devolver dinero, regístralo como gasto "Devolución".` });
+        }
         const folioCancelado = await orderFolio(id);
         const mesaCancelada = await mesaNombre(order.table_id);
 
@@ -413,7 +449,7 @@ const cancelOrder = async (req, res) => {
             await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
-                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden ${folioCancelado} de ${mesaCancelada}${order.abonado > 0 ? ` (tenía abonos por $${order.abonado})` : ''}. Motivo: ${reason || 'N/A'}`, 'Administrador']
+                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden ${folioCancelado} de ${mesaCancelada}. Motivo: ${reason || 'N/A'}`, 'Administrador']
             );
         });
 
@@ -464,22 +500,30 @@ const applyDiscount = async (req, res) => {
         if (numericDiscount < 0) {
             return res.status(400).json({ error: 'El descuento no puede ser negativo.' });
         }
+        let cerrada = false;
 
         await dbTransaction(async () => {
             const order = await dbGet(`SELECT status FROM orders WHERE id = ?`, [id]);
             if (!order) throw httpError(404, 'Orden no encontrada');
             if (order.status !== 'ABIERTA') throw httpError(409, 'La cuenta ya fue cobrada.');
+            const previo = await dbGet(`SELECT total, IFNULL(discount_amount, 0) AS descuento FROM orders WHERE id = ?`, [id]);
+            const nuevoTotal = toCents(previo.total) + toCents(previo.descuento) - toCents(numericDiscount);
+            const abonado = await abonadoDe(id);
+            if (abonado > 0 && nuevoTotal < toCents(abonado)) {
+                throw httpError(409, `El descuento deja la cuenta por debajo de lo ya abonado ($${abonado}). Si hay que devolver dinero, regístralo como gasto "Devolución".`);
+            }
             await dbRun(`UPDATE orders SET discount_amount = ? WHERE id = ?`, [numericDiscount, id]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
                 ['DESCUENTO_APLICADO', `Descuento de $${numericDiscount} aplicado a la Orden ${await orderFolio(id)}`, 'Administrador']
             );
             await updateOrderTotal(id);
+            cerrada = await cerrarSiEstaCubierta(id);
         });
 
         emitUpdate(req);
 
-        res.json({ message: 'Descuento aplicado' });
+        res.json({ message: 'Descuento aplicado', closed: cerrada });
     } catch (err) {
         sendError(res, err);
     }

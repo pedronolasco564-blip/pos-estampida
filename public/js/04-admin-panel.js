@@ -207,6 +207,7 @@ const AUDIT_ACTIONS = {
     ELIMINAR_GASTO:          { label: 'Gasto eliminado',      cls: 't-alert', groups: ['dinero', 'importantes'] },
     CONTEO_CAJA:             { label: 'Conteo de caja',       cls: 't-money', groups: ['dinero'] },
     CAMBIO_PIN:              { label: 'Cambio de PIN',        cls: 't-alert', groups: ['importantes'] },
+    CUENTA_CERRADA:          { label: 'Cerrada con abonos',   cls: 't-money', groups: ['ordenes', 'dinero'] },
 };
 const auditInfo = (action) => AUDIT_ACTIONS[action] || { label: action, cls: '', groups: [] };
 let auditLogs = [];

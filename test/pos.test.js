@@ -846,3 +846,49 @@ describe('Robustez: reglas de cuentas', () => {
         assert.equal((await fetch(`${testBaseUrl}/api/no-existe`)).status, 404);
     });
 });
+
+describe('Cuentas con abonos: nunca salen del corte', () => {
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let tableId, productId, orderId, itemId;
+
+    before(async () => {
+        tableId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`ABO_${Date.now()}`])).lastID;
+        productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Abono', 100, 'COCINA', 'GENERAL')`)).lastID;
+        orderId = (await (await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 3 }], is_printed: false }))).json()).orderId;
+        itemId = (await dbGet('SELECT id FROM order_items WHERE order_id = ?', [orderId])).id;
+        await fetch(`${testBaseUrl}/api/orders/${orderId}/pay`, json('POST', { payment_method: 'EFECTIVO', amount_paid: 150 }));
+    });
+    after(async () => {
+        await dbRun('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+        await dbRun('DELETE FROM orders WHERE id = ?', [orderId]);
+        await dbRun('DELETE FROM tables WHERE id = ?', [tableId]);
+        await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+    });
+
+    test('No se cancela completa una cuenta con abonos', async () => {
+        const r = await fetch(`${testBaseUrl}/api/orders/${orderId}/cancel-order`, json('POST', { pin: '1234', reason: 'PRUEBA' }));
+        assert.equal(r.status, 409);
+        assert.ok((await dbGet('SELECT id FROM orders WHERE id = ?', [orderId])), 'la cuenta sigue existiendo');
+    });
+
+    test('Se cancela lo pendiente, pero no lo que ya cubrió el abono', async () => {
+        const c1 = await fetch(`${testBaseUrl}/api/orders/${orderId}/cancel-item/${itemId}`, json('POST', { pin: '1234', reason: 'NO SALIÓ' }));
+        assert.equal(c1.status, 200);
+        assert.equal((await dbGet('SELECT remaining_balance FROM orders WHERE id = ?', [orderId])).remaining_balance, 50);
+        const c2 = await fetch(`${testBaseUrl}/api/orders/${orderId}/cancel-item/${itemId}`, json('POST', { pin: '1234', reason: 'NO SALIÓ' }));
+        assert.equal(c2.status, 409);
+    });
+
+    test('Un descuento no deja la cuenta por debajo de lo abonado; si la cubre, se cierra sola', async () => {
+        const mucho = await fetch(`${testBaseUrl}/api/orders/${orderId}/discount`, json('POST', { pin: '1234', discount_amount: 60 }));
+        assert.equal(mucho.status, 409);
+        const justo = await fetch(`${testBaseUrl}/api/orders/${orderId}/discount`, json('POST', { pin: '1234', discount_amount: 50 }));
+        assert.equal(justo.status, 200);
+        assert.equal((await justo.json()).closed, true);
+        const o = await dbGet('SELECT status, total, cash_amount, amount_paid, remaining_balance FROM orders WHERE id = ?', [orderId]);
+        assert.deepEqual(o, { status: 'PAGADA', total: 150, cash_amount: 150, amount_paid: 150, remaining_balance: 0 });
+        assert.equal((await dbGet('SELECT status FROM tables WHERE id = ?', [tableId])).status, 'LIBRE');
+        const log = await dbGet(`SELECT details FROM audit_logs WHERE action = 'CUENTA_CERRADA' ORDER BY id DESC LIMIT 1`);
+        assert.ok(log && log.details.includes('150'));
+    });
+});
