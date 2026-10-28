@@ -11,8 +11,11 @@ const { createSession, destroySession, getToken } = require('../middleware/admin
 const getTables = async (req, res) => {
     try {
         const query = `
-            SELECT 
-                t.*,
+            SELECT
+                t.id,
+                t.table_number,
+                -- Ocupada = tiene cuenta abierta (no se confía en una marca guardada aparte que pueda desfasarse)
+                CASE WHEN o.id IS NOT NULL THEN 'OCUPADA' ELSE 'LIBRE' END AS status,
                 o.total AS current_total,
                 o.remaining_balance,
                 CAST((julianday('now') - julianday(o.created_at)) * 24 * 60 AS INTEGER) AS minutes_open,
@@ -27,7 +30,7 @@ const getTables = async (req, res) => {
                 SELECT table_id, id, total, remaining_balance, created_at, waiter_name, ${folioSql('orders')} AS folio
                 FROM orders
                 WHERE status = 'ABIERTA'
-                GROUP BY table_id
+                  AND id IN (SELECT MIN(id) FROM orders WHERE status = 'ABIERTA' GROUP BY table_id)
             ) o ON o.table_id = t.id
         `;
         const tables = await dbAll(query);
@@ -60,9 +63,10 @@ const createTable = async (req, res) => {
 
 const deleteTable = async (req, res) => {
     try {
-        const table = await dbGet(`SELECT status FROM tables WHERE id = ?`, [req.params.id]);
+        const table = await dbGet(`SELECT id FROM tables WHERE id = ?`, [req.params.id]);
         if (!table) return res.status(404).json({ error: 'Mesa no encontrada.' });
-        if (table.status === 'OCUPADA') {
+        const abierta = await dbGet(`SELECT id FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [req.params.id]);
+        if (abierta) {
             return res.status(400).json({ error: 'No se puede eliminar una mesa ocupada. Cierre o libere la cuenta primero.' });
         }
 

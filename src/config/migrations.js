@@ -33,6 +33,30 @@ const MIGRATIONS = [
              WHERE unit_price IS NULL`,
         ],
     },
+    {
+        version: 3,
+        name: 'Una sola cuenta abierta por mesa',
+        sql: [
+            // Si alguna mesa tuviera dos cuentas abiertas (versiones anteriores), se unen en la más antigua:
+            // platillos, totales y abonos pasan a esa cuenta, y queda registrado en Auditoría.
+            `UPDATE order_items SET order_id = (SELECT (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA') FROM orders d WHERE d.id = order_items.order_id)
+             WHERE order_id IN (SELECT d.id FROM orders d WHERE d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA'))`,
+            `UPDATE orders SET
+                total = total + (SELECT IFNULL(SUM(d.total), 0) FROM orders d WHERE d.table_id = orders.table_id AND d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA')),
+                remaining_balance = IFNULL(remaining_balance, 0) + (SELECT IFNULL(SUM(d.remaining_balance), 0) FROM orders d WHERE d.table_id = orders.table_id AND d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA')),
+                discount_amount = IFNULL(discount_amount, 0) + (SELECT IFNULL(SUM(d.discount_amount), 0) FROM orders d WHERE d.table_id = orders.table_id AND d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA')),
+                cash_amount = IFNULL(cash_amount, 0) + (SELECT IFNULL(SUM(d.cash_amount), 0) FROM orders d WHERE d.table_id = orders.table_id AND d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA')),
+                card_amount = IFNULL(card_amount, 0) + (SELECT IFNULL(SUM(d.card_amount), 0) FROM orders d WHERE d.table_id = orders.table_id AND d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA')),
+                tip_amount = IFNULL(tip_amount, 0) + (SELECT IFNULL(SUM(d.tip_amount), 0) FROM orders d WHERE d.table_id = orders.table_id AND d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA'))
+             WHERE status = 'ABIERTA' AND id = (SELECT MIN(k.id) FROM orders k WHERE k.table_id = orders.table_id AND k.status = 'ABIERTA')
+               AND EXISTS (SELECT 1 FROM orders d WHERE d.table_id = orders.table_id AND d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA'))`,
+            `INSERT INTO audit_logs (action, details, performed_by, created_at)
+             SELECT 'FUSION_CUENTAS', 'La cuenta #' || d.id || ' se unió a la cuenta #' || (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA') || ' (estaban abiertas en la misma mesa)', 'Sistema', datetime('now', '-6 hours')
+             FROM orders d WHERE d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA')`,
+            `DELETE FROM orders WHERE id IN (SELECT d.id FROM orders d WHERE d.status = 'ABIERTA' AND id > (SELECT MIN(k.id) FROM orders k WHERE k.table_id = d.table_id AND k.status = 'ABIERTA'))`,
+            `CREATE UNIQUE INDEX IF NOT EXISTS idx_una_cuenta_abierta ON orders(table_id) WHERE status = 'ABIERTA'`,
+        ],
+    },
 ];
 
 const LATEST_VERSION = MIGRATIONS.length ? MIGRATIONS[MIGRATIONS.length - 1].version : 0;

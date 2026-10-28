@@ -228,6 +228,7 @@ async function loadTables() {
                 btn.innerHTML = `${textoMesa}${draftBadge}`; 
             }
             btn.dataset.id = table.id;
+            if (table.id === currentTableId) btn.classList.add('selected');
             btn.onclick = () => {
                 selectTable(table);
                 // En celular/tablet las mesas van arriba del menú: al elegir una, se baja solo al menú para empezar a pedir

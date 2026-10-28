@@ -925,3 +925,49 @@ describe('Copia de respaldo fuera de la PC', () => {
         assert.equal(st.external, null);
     });
 });
+
+describe('Mesas siempre al día: una cuenta abierta por mesa', () => {
+    let tableId, productId;
+    before(async () => {
+        tableId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`SYNC_${Date.now()}`])).lastID;
+        productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Sync', 50, 'COCINA', 'GENERAL')`)).lastID;
+    });
+    after(async () => {
+        await dbRun(`DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE table_id = ?)`, [tableId]);
+        await dbRun('DELETE FROM orders WHERE table_id = ?', [tableId]);
+        await dbRun('DELETE FROM tables WHERE id = ?', [tableId]);
+        await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+        await dbRun(`CREATE UNIQUE INDEX IF NOT EXISTS idx_una_cuenta_abierta ON orders(table_id) WHERE status = 'ABIERTA'`);
+    });
+
+    test('La actualización de la BD une dos cuentas abiertas de una mesa sin perder platillos ni dinero', async () => {
+        await dbRun('DROP INDEX IF EXISTS idx_una_cuenta_abierta');
+        const a = (await dbRun(`INSERT INTO orders (table_id, waiter_name, total, remaining_balance, cash_amount) VALUES (?, 'Pedro', 95, 45, 50)`, [tableId])).lastID;
+        const b = (await dbRun(`INSERT INTO orders (table_id, waiter_name, total, remaining_balance) VALUES (?, 'Pedro', 40, 40)`, [tableId])).lastID;
+        await dbRun(`INSERT INTO order_items (order_id, product_id, quantity, unit_price) VALUES (?, ?, 1, 95), (?, ?, 1, 40)`, [a, productId, b, productId]);
+
+        const { MIGRATIONS } = require('../src/config/migrations');
+        const m3 = MIGRATIONS.find(m => m.version === 3);
+        for (const sql of m3.sql) await dbRun(sql);
+
+        const abiertas = await dbAll(`SELECT * FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [tableId]);
+        assert.equal(abiertas.length, 1);
+        assert.equal(abiertas[0].id, a);
+        assert.equal(abiertas[0].total, 135);
+        assert.equal(abiertas[0].remaining_balance, 85);
+        assert.equal(abiertas[0].cash_amount, 50);
+        assert.equal((await dbGet('SELECT COUNT(*) AS n FROM order_items WHERE order_id = ?', [a])).n, 2);
+        assert.ok(await dbGet(`SELECT id FROM audit_logs WHERE action = 'FUSION_CUENTAS' AND details LIKE ?`, [`%#${b}%`]));
+    });
+
+    test('La BD ya no permite una segunda cuenta abierta en la misma mesa', async () => {
+        await assert.rejects(dbRun(`INSERT INTO orders (table_id, waiter_name) VALUES (?, 'Pedro')`, [tableId]), /UNIQUE/);
+    });
+
+    test('Ocupada o libre se calcula de las cuentas abiertas (aunque la marca guardada diga otra cosa)', async () => {
+        await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [tableId]);
+        const t = (await (await fetch(`${testBaseUrl}/api/catalog/tables`)).json()).tables.find(x => x.id === tableId);
+        assert.equal(t.status, 'OCUPADA');
+        assert.equal(t.current_total, 135);
+    });
+});

@@ -3,7 +3,31 @@
 const socket = io();
 // Si esta pantalla está en la PC de la caja, se registra para imprimir los tickets que mandan los celulares
 const esPantallaDeCaja = () => window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
-socket.on('connect', () => { if (esPantallaDeCaja()) socket.emit('soy-caja', { desktop: !!window.posDesktop }); });
+// Mientras un celular tiene la pantalla apagada o pierde el Wi-Fi, no recibe los avisos de cambios de los demás.
+// Al volver la conexión o al regresar a la app se recargan los datos, para no mostrar totales ni mesas viejos.
+function refrescarPantalla() {
+    if (!navigator.onLine) return;
+    if (posView.style.display !== 'none') {
+        loadTables();
+        // La cuenta abierta se recarga solo si no hay nada a medio capturar (platillos nuevos, cobro o nombre)
+        if (currentTableId && newOrderItems.length === 0 && paymentPanel.style.display === 'none' && !clienteLlevarActual) {
+            selectTable({ id: currentTableId, table_number: currentTableSpan.textContent.split(' (')[0] }, { silencioso: true });
+        }
+    }
+    if (adminHubView.style.display !== 'none') loadDashboard();
+    if (corteView.style.display !== 'none') loadCorteData();
+}
+let socketYaConectado = false;
+socket.on('connect', () => {
+    if (esPantallaDeCaja()) socket.emit('soy-caja', { desktop: !!window.posDesktop });
+    if (socketYaConectado) refrescarPantalla(); // reconexión: pudieron perderse avisos
+    socketYaConectado = true;
+});
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') refrescarPantalla(); });
+// Respaldo: la cuadrícula se actualiza cada 45 s (tiempos de espera y totales al día aunque se pierda un aviso)
+setInterval(() => {
+    if (document.visibilityState === 'visible' && navigator.onLine && posView.style.display !== 'none') loadTables();
+}, 45000);
 socket.on('update-tables', () => { 
     if(adminHubView.style.display !== 'none' && navigator.onLine) loadDashboard();
     if(posView.style.display !== 'none' && navigator.onLine) loadTables(); 

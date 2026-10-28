@@ -174,6 +174,8 @@ document.getElementById('btn-confirm-pay').onclick = async () => {
             currentRemainingBalance = result.fully_paid ? 0 : result.remaining_balance; 
             selectedItemsToPay = []; 
             if (result.fully_paid) { delete tableInstructions[currentTableId]; socket.emit('payment-instruction', { tableId: currentTableId, clear: true }); }
+            // Se pagó lo que mostraba la pantalla, pero la cuenta creció mientras tanto (otro dispositivo agregó platillos)
+            else if (amountPaid + 0.005 >= esperado) { await customAlert(`Mientras cobrabas se agregaron platillos a esta mesa. Queda un saldo pendiente de $${fmtMoney(result.remaining_balance || 0)}.`, 'warning', 'La cuenta cambió'); }
         } else { await customAlert(`Error: ${result.error}`, 'error'); } 
     } catch (error) { 
         btnCobrar.style.pointerEvents = 'auto';

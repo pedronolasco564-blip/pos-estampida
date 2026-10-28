@@ -3,8 +3,9 @@
 let clienteLlevarActual = null;
 let currentPax = 1;
 
-async function selectTable(table) {
-    triggerHaptic(20);
+// opts.silencioso: recarga de fondo (al volver la conexión), sin vibrar
+async function selectTable(table, opts = {}) {
+    if (!opts.silencioso) triggerHaptic(20);
     // 1. Limpiamos la selección de todas las mesas
     document.querySelectorAll('.btn-table').forEach(b => b.classList.remove('selected'));
     // 2. Iluminamos solo la mesa que acabamos de tocar
@@ -12,9 +13,12 @@ async function selectTable(table) {
     if (activeBtn) activeBtn.classList.add('selected');
     draftTableId = null; currentFolio = null; currentTableId = table.id; currentTableSpan.textContent = table.table_number;btnDeselectTable.style.display = 'inline-block'; currentOrderId = null; savedOrderItems = []; newOrderItems = []; paymentPanel.style.display = 'none'; document.getElementById('payment-buttons-container').style.display = 'none'; currentRemainingBalance = 0; selectedItemsToPay = []; document.getElementById('items-to-pay-container').style.display = 'none'; document.getElementById('pay-discount-display-container').style.display = 'none'; const waiterLabel = waiterSelect.previousElementSibling;
 
-    if (table.status === 'OCUPADA') {
-        clienteLlevarActual = null; 
-        const response = await fetch(`/api/orders/table/${table.id}`); const data = await response.json();
+    // Siempre se pregunta al servidor: el cuadro de la mesa puede estar viejo (otro dispositivo la abrió o la cobró)
+    clienteLlevarActual = null;
+    let data = { order: null };
+    try { const response = await fetch(`/api/orders/table/${table.id}`); if (response.ok) data = await response.json(); } catch (_) { /* sin red */ }
+    if (currentTableId !== table.id) return; // se tocó otra mesa mientras tanto
+    {
         if (data.order) {
             currentPax = data.order.guests || 1;
             currentOrderId = data.order.id; currentFolio = data.order.folio || `#${data.order.id}`; savedOrderItems = data.order.items;currentRemainingBalance = data.order.remaining_balance !== null ? data.order.remaining_balance : data.order.total;
@@ -23,7 +27,8 @@ async function selectTable(table) {
             if (data.order.discount_amount && data.order.discount_amount > 0) { document.getElementById('pay-discount-display-container').style.display = 'block'; document.getElementById('pay-discount-display').textContent = data.order.discount_amount.toFixed(2); }
             btnTransferTable.style.display = 'inline-block';
         }
-    } else { 
+    }
+    if (!data.order) {
         // === LA MESA ESTÁ LIBRE ===
         btnTransferTable.style.display = 'none'; 
         waiterSelect.disabled = false; 

@@ -97,6 +97,8 @@ async function cerrarSiEstaCubierta(orderId) {
 // Responde con el código del error (400/404/409) o 500 si fue inesperado
 function sendError(res, err) {
     if (err.status) return res.status(err.status).json({ error: err.message });
+    // Regla de la BD: una sola cuenta abierta por mesa
+    if (/UNIQUE constraint failed: orders\.table_id/.test(err.message)) return res.status(409).json({ error: 'La mesa ya tiene una cuenta abierta. Actualiza la pantalla.' });
     console.error('[OrderController]', err);
     res.status(500).json({ error: 'Error interno del servidor.' });
 }
@@ -156,7 +158,7 @@ async function updateOrderTotal(orderId) {
 const getTableOrder = async (req, res) => {
     try {
         const { tableId } = req.params;
-        const order = await dbGet(`SELECT o.*, ${folioSql('o')} AS folio FROM orders o WHERE o.table_id = ? AND o.status = 'ABIERTA'`, [tableId]);
+        const order = await dbGet(`SELECT o.*, ${folioSql('o')} AS folio FROM orders o WHERE o.table_id = ? AND o.status = 'ABIERTA' ORDER BY o.id LIMIT 1`, [tableId]);
         if (!order) {
             return res.json({ order: null });
         }
