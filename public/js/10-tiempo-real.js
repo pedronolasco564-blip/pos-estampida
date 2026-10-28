@@ -1,6 +1,9 @@
 // Socket: actualizaciones entre dispositivos e instrucciones de cobro.
 // Scripts clásicos que comparten el ámbito global; se cargan en orden desde index.html.
 const socket = io();
+// Si esta pantalla está en la PC de la caja, se registra para imprimir los tickets que mandan los celulares
+const esPantallaDeCaja = () => window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+socket.on('connect', () => { if (esPantallaDeCaja()) socket.emit('soy-caja', { desktop: !!window.posDesktop }); });
 socket.on('update-tables', () => { 
     if(adminHubView.style.display !== 'none' && navigator.onLine) loadDashboard();
     if(posView.style.display !== 'none' && navigator.onLine) loadTables(); 

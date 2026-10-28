@@ -24,6 +24,15 @@ const MIGRATIONS = [
             `UPDATE expenses SET amount = ROUND(amount, 2)`,
         ],
     },
+    {
+        version: 2,
+        name: 'Precio guardado en cada platillo de las cuentas',
+        sql: [
+            // Las cuentas anteriores no lo tenían: se toma el precio actual del menú (el mismo que ya mostraban)
+            `UPDATE order_items SET unit_price = (SELECT ROUND(price, 2) FROM products WHERE products.id = order_items.product_id)
+             WHERE unit_price IS NULL`,
+        ],
+    },
 ];
 
 const LATEST_VERSION = MIGRATIONS.length ? MIGRATIONS[MIGRATIONS.length - 1].version : 0;

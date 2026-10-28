@@ -218,13 +218,19 @@ function closeTicketModal() {
     else { selectTable({ id: currentTableId, table_number: currentTableSpan.textContent, status: 'OCUPADA' }); loadTables(); } 
 }
 
-async function printTicket() {
-    const ticketContent = document.getElementById('ticket-content').innerHTML;
+// contenido: HTML a imprimir (los tickets de celulares); si no se da, el que se ve en la vista previa.
+// Devuelve { ok, reason } para que quien lo pidió sepa si salió.
+async function printTicket(contenido) {
+    const ticketContent = typeof contenido === 'string' ? contenido : document.getElementById('ticket-content').innerHTML;
 
     // 🚀 MAGIA INALÁMBRICA: Si estamos en el celular (por IP), enviamos el ticket por Wi-Fi a la caja.
-    if (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') {
-        socket.emit('impresion-remota', ticketContent);
-        return; // El celular termina su trabajo aquí sin abrir diálogos de PDF
+    if (!esPantallaDeCaja()) {
+        // La caja confirma si imprimió; si no hay caja o falló la impresora, el mesero lo sabe al momento
+        const r = await new Promise((resolve) => {
+            socket.timeout(25000).emit('impresion-remota', ticketContent, (err, res) => resolve(err ? { ok: false, reason: 'Sin respuesta de la caja' } : res));
+        });
+        if (!r || !r.ok) await customAlert(`El ticket NO se imprimió: ${escapeHtml((r && r.reason) || 'error')}. Avisa en la caja.`, 'error', 'Impresión');
+        return r;
     }
 
     const ticketDoc = ticketDocument(ticketContent);
@@ -234,7 +240,7 @@ async function printTicket() {
         const heightMm = await medirTicketMm(ticketDoc);
         const result = await window.posDesktop.printTicket(ticketDoc, { heightMm });
         if (!result || !result.ok) await customAlert(`No se pudo imprimir el ticket: ${escapeHtml(result ? result.reason : 'sin respuesta')}. Revisa la impresora en el icono del POS junto al reloj → Impresora de tickets.`, 'error', 'Impresión');
-        return;
+        return result || { ok: false, reason: 'sin respuesta' };
     }
 
     // 🖨️ MODO PC en navegador (sistema anterior): Imprime físicamente usando un iframe invisible
@@ -255,6 +261,7 @@ async function printTicket() {
         printFrame.contentWindow.focus();
         printFrame.contentWindow.print();
     }, 500);
+    return { ok: true };
 }
 
 

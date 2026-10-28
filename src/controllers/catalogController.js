@@ -84,7 +84,7 @@ const deleteTable = async (req, res) => {
 const getCategories = async (req, res) => {
     try {
         const categories = await dbAll(`
-            SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category = c.name) AS product_count
+            SELECT c.*, (SELECT COUNT(*) FROM products p WHERE p.category = c.name AND IFNULL(p.deleted, 0) = 0) AS product_count
             FROM categories c ORDER BY c.sort_order, c.id`);
         res.json({ categories });
     } catch (err) {
@@ -138,7 +138,7 @@ const deleteCategory = async (req, res) => {
     try {
         const cat = await dbGet(`SELECT * FROM categories WHERE id = ?`, [req.params.id]);
         if (!cat) return res.status(404).json({ error: 'Categoría no encontrada.' });
-        const { n } = await dbGet(`SELECT COUNT(*) AS n FROM products WHERE category = ?`, [cat.name]);
+        const { n } = await dbGet(`SELECT COUNT(*) AS n FROM products WHERE category = ? AND IFNULL(deleted, 0) = 0`, [cat.name]);
         if (n > 0) {
             return res.status(400).json({ error: `La categoría ${cat.name} tiene ${n} platillo(s). Cámbialos de categoría o bórralos primero.` });
         }
@@ -260,7 +260,7 @@ const deleteModifier = async (req, res) => {
 // ========================================================
 const getProducts = async (req, res) => {
     try {
-        const products = await dbAll(`SELECT * FROM products`);
+        const products = await dbAll(`SELECT * FROM products WHERE IFNULL(deleted, 0) = 0`);
         res.json({ products });
     } catch (err) {
         console.error('[CatalogController]', err);
@@ -271,7 +271,8 @@ const getProducts = async (req, res) => {
 const createProduct = async (req, res) => {
     try {
         const { name, price, station, category } = req.body;
-        if (!name) return res.status(400).json({ error: 'Nombre de producto requerido.' });
+        if (!name || !String(name).trim()) return res.status(400).json({ error: 'Nombre de producto requerido.' });
+        if (!(round2(price) >= 0)) return res.status(400).json({ error: 'Precio inválido.' });
 
         await dbRun(
             `INSERT INTO products (name, price, station, category, is_available) VALUES (?, ?, ?, ?, 1)`,
@@ -290,6 +291,8 @@ const createProduct = async (req, res) => {
 const updateProduct = async (req, res) => {
     try {
         const { name, price, station, category } = req.body;
+        if (!name || !String(name).trim()) return res.status(400).json({ error: 'Nombre de producto requerido.' });
+        if (!(round2(price) >= 0)) return res.status(400).json({ error: 'Precio inválido.' });
         await dbRun(
             `UPDATE products SET name=?, price=?, station=?, category=? WHERE id=?`,
             [String(name).trim(), round2(price), station || 'COCINA', category || 'GENERAL', req.params.id]
@@ -330,7 +333,10 @@ const deleteProduct = async (req, res) => {
             return res.status(400).json({ error: 'No se puede eliminar el platillo porque está en comandas de mesas activas. Márquelo como agotado o cierre las mesas primero.' });
         }
 
-        await dbRun(`DELETE FROM products WHERE id = ?`, [req.params.id]);
+        // Si ya aparece en cuentas anteriores se oculta (las reimpresiones y el historial lo siguen mostrando)
+        const used = await dbGet(`SELECT 1 AS x FROM order_items WHERE product_id = ? LIMIT 1`, [req.params.id]);
+        if (used) await dbRun(`UPDATE products SET deleted = 1, is_available = 0 WHERE id = ?`, [req.params.id]);
+        else await dbRun(`DELETE FROM products WHERE id = ?`, [req.params.id]);
 
         emitUpdate(req, 'update-products');
 

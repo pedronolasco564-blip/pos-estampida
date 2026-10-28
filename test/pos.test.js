@@ -709,3 +709,140 @@ describe('Tickets: WhatsApp de facturación y corte', () => {
         assert.equal(typeof corte.open_tables, 'number');
     });
 });
+
+describe('Robustez: peticiones simultáneas', () => {
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const mesas = [], ordenes = [];
+    let productId;
+
+    before(async () => {
+        const stamp = Date.now();
+        for (let i = 0; i < 15; i++) mesas.push((await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`SIM_${stamp}_${i}`])).lastID);
+        productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Simultáneo', 100, 'COCINA', 'GENERAL')`)).lastID;
+    });
+
+    after(async () => {
+        for (const id of ordenes) { await dbRun('DELETE FROM order_items WHERE order_id = ?', [id]); await dbRun('DELETE FROM orders WHERE id = ?', [id]); }
+        await dbRun(`DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE table_id IN (${mesas.join(',')}))`);
+        await dbRun(`DELETE FROM orders WHERE table_id IN (${mesas.join(',')})`);
+        await dbRun(`DELETE FROM tables WHERE id IN (${mesas.join(',')})`);
+        await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+    });
+
+    test('15 órdenes enviadas al mismo tiempo se guardan completas', async () => {
+        const res = await Promise.all(mesas.map(t => fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: t, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 2 }], is_printed: false }))));
+        const status = res.map(r => r.status);
+        for (const r of res) { if (r.status === 201) ordenes.push((await r.json()).orderId); }
+        assert.deepEqual(status, mesas.map(() => 201), `respuestas: ${status.join(',')}`);
+        for (const t of mesas) {
+            const o = await dbGet(`SELECT o.total, (SELECT COUNT(*) FROM order_items WHERE order_id = o.id) AS n FROM orders o WHERE table_id = ? AND status = 'ABIERTA'`, [t]);
+            assert.ok(o, `la mesa ${t} tiene su orden`);
+            assert.equal(o.total, 200);
+            assert.equal(o.n, 1);
+        }
+    });
+});
+
+describe('Robustez: reglas de cuentas', () => {
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const mesas = [];
+    let productId;
+    const stamp = Date.now();
+
+    before(async () => {
+        for (let i = 0; i < 4; i++) mesas.push((await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`REG_${stamp}_${i}`])).lastID);
+        productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Regla', 100, 'COCINA', 'GENERAL')`)).lastID;
+    });
+    after(async () => {
+        const ids = mesas.join(',');
+        await dbRun(`DELETE FROM order_items WHERE order_id IN (SELECT id FROM orders WHERE table_id IN (${ids}))`);
+        await dbRun(`DELETE FROM orders WHERE table_id IN (${ids})`);
+        await dbRun(`DELETE FROM tables WHERE id IN (${ids})`);
+        await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+    });
+
+    const crear = (tableId, extra = {}) => fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 1 }], is_printed: false, ...extra }));
+    const pagar = (orderId, monto) => fetch(`${testBaseUrl}/api/orders/${orderId}/pay`, json('POST', { payment_method: 'EFECTIVO', amount_paid: monto }));
+    const abiertas = async (tableId) => (await dbGet(`SELECT COUNT(*) AS n FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [tableId])).n;
+
+    test('Platillos inválidos o sin mesero se rechazan', async () => {
+        assert.equal((await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: mesas[0], waiter_name: 'Pedro', items: [{ product_id: productId, quantity: -3 }] }))).status, 400);
+        assert.equal((await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: mesas[0], waiter_name: 'Pedro', items: [] }))).status, 400);
+        assert.equal((await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: mesas[0], items: [{ product_id: productId, quantity: 1 }] }))).status, 400);
+    });
+
+    test('Dos dispositivos abriendo la misma mesa: una sola cuenta con todo', async () => {
+        const [a, b] = await Promise.all([crear(mesas[0]), crear(mesas[0])]);
+        assert.equal(a.status, 201); assert.equal(b.status, 201);
+        assert.equal(await abiertas(mesas[0]), 1);
+        const ra = await a.json(), rb = await b.json();
+        assert.equal(ra.orderId, rb.orderId);
+        assert.equal((await dbGet('SELECT total FROM orders WHERE id = ?', [ra.orderId])).total, 200);
+    });
+
+    test('Un envío repetido (misma clave) no duplica los platillos', async () => {
+        const r1 = await (await crear(mesas[1], { request_id: `rep-${stamp}-abc` })).json();
+        const r2 = await (await crear(mesas[1], { request_id: `rep-${stamp}-abc` })).json();
+        assert.equal(r1.orderId, r2.orderId);
+        assert.equal((await dbGet('SELECT total FROM orders WHERE id = ?', [r1.orderId])).total, 100);
+    });
+
+    test('No se cobra dos veces ni se agregan platillos a una cuenta cobrada', async () => {
+        const { orderId } = await (await crear(mesas[2])).json();
+        const [p1, p2] = await Promise.all([pagar(orderId, 100), pagar(orderId, 100)]);
+        assert.deepEqual([p1.status, p2.status].sort(), [200, 409]);
+        const o = await dbGet('SELECT cash_amount, amount_paid FROM orders WHERE id = ?', [orderId]);
+        assert.equal(o.cash_amount, 100); assert.equal(o.amount_paid, 100);
+        const add = await fetch(`${testBaseUrl}/api/orders/${orderId}/items`, json('POST', { items: [{ product_id: productId, quantity: 1 }] }));
+        assert.equal(add.status, 409);
+    });
+
+    test('Reabrir y volver a cobrar no duplica el efectivo del corte', async () => {
+        const o = await dbGet(`SELECT id FROM orders WHERE table_id = ? AND status = 'PAGADA'`, [mesas[2]]);
+        assert.equal((await fetch(`${testBaseUrl}/api/orders/${o.id}/reopen`, json('POST', { pin: '1234' }))).status, 200);
+        assert.equal((await pagar(o.id, 100)).status, 200);
+        assert.equal((await dbGet('SELECT cash_amount FROM orders WHERE id = ?', [o.id])).cash_amount, 100);
+    });
+
+    test('No se transfiere a una mesa ocupada ni a la misma mesa', async () => {
+        const { orderId } = await (await crear(mesas[3])).json();
+        assert.equal((await fetch(`${testBaseUrl}/api/orders/${orderId}/transfer`, json('PUT', { new_table_id: mesas[0] }))).status, 409);
+        assert.equal((await fetch(`${testBaseUrl}/api/orders/${orderId}/transfer`, json('PUT', { new_table_id: mesas[3] }))).status, 400);
+        assert.equal(await abiertas(mesas[3]), 1);
+        assert.equal((await dbGet('SELECT status FROM tables WHERE id = ?', [mesas[3]])).status, 'OCUPADA');
+    });
+
+    test('El precio queda guardado: cambiar el menú no altera la cuenta', async () => {
+        const order = await dbGet(`SELECT id, total FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [mesas[3]]);
+        await dbRun('UPDATE products SET price = 999 WHERE id = ?', [productId]);
+        try {
+            const det = (await (await fetch(`${testBaseUrl}/api/orders/${order.id}`)).json()).order;
+            assert.equal(det.items[0].price, 100);
+            const { updateOrderTotal } = require('../src/controllers/orderController');
+            await updateOrderTotal(order.id);
+            assert.equal((await dbGet('SELECT total FROM orders WHERE id = ?', [order.id])).total, 100);
+        } finally {
+            await dbRun('UPDATE products SET price = 100 WHERE id = ?', [productId]);
+        }
+    });
+
+    test('Borrar un platillo usado en cuentas lo oculta sin romper las cuentas', async () => {
+        const order = await dbGet(`SELECT id FROM orders WHERE table_id = ? AND status = 'PAGADA'`, [mesas[2]]);
+        const tmpProd = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Temporal', 50, 'COCINA', 'GENERAL')`)).lastID;
+        await dbRun(`INSERT INTO order_items (order_id, product_id, quantity, unit_price, paid) VALUES (?, ?, 1, 50, 1)`, [order.id, tmpProd]);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/products/${tmpProd}`, { method: 'DELETE' })).status, 200);
+        const menu = (await (await fetch(`${testBaseUrl}/api/catalog/products`)).json()).products;
+        assert.ok(!menu.some(p => p.id === tmpProd), 'ya no aparece en el menú');
+        const det = (await (await fetch(`${testBaseUrl}/api/orders/${order.id}`)).json()).order;
+        assert.ok(det.items.some(i => i.name === 'Temporal'), 'sigue en la cuenta');
+    });
+
+    test('El fondo rechaza montos inválidos y la API responde JSON ante errores', async () => {
+        const bad = await fetch(`${testBaseUrl}/api/reports/fondo`, json('POST', { pin: '1234', date: '2026-01-01', amount: 'abc' }));
+        assert.equal(bad.status, 400);
+        const malformed = await fetch(`${testBaseUrl}/api/orders`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{roto' });
+        assert.equal(malformed.status, 400);
+        assert.ok((await malformed.json()).error);
+        assert.equal((await fetch(`${testBaseUrl}/api/no-existe`)).status, 404);
+    });
+});

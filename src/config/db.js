@@ -86,6 +86,13 @@ function initDatabase() {
         db.run(`INSERT OR IGNORE INTO settings (key, value)
                 SELECT 'folio_seq_C', COALESCE((SELECT seq FROM sqlite_sequence WHERE name = 'orders'), (SELECT MAX(id) FROM orders), 0)`);
         db.run(`ALTER TABLE orders ADD COLUMN card_amount REAL DEFAULT 0`, () => {});
+        // Precio del platillo al momento de pedirlo (cambiar el menú ya no altera cuentas ni reimpresiones)
+        db.run(`ALTER TABLE order_items ADD COLUMN unit_price REAL`, () => {});
+        // Platillos borrados que aparecen en cuentas viejas: se ocultan del menú en vez de borrarse
+        db.run(`ALTER TABLE products ADD COLUMN deleted INTEGER DEFAULT 0`, () => {});
+        // Envíos ya procesados (evita duplicar una orden si el celular reintenta tras perder el Wi-Fi)
+        db.run(`CREATE TABLE IF NOT EXISTS request_log (id TEXT PRIMARY KEY, response TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+        db.run(`DELETE FROM request_log WHERE created_at < datetime('now', '-3 days')`);
         // Auditoría: órdenes y cambio de PIN se guardaban en UTC (6 h adelantadas); se corrigen una sola vez.
         db.run(`UPDATE audit_logs SET created_at = datetime(created_at, '-6 hours')
                 WHERE action IN ('CREAR_ORDEN', 'AGREGAR_ITEMS', 'CANCELAR_PLATILLO', 'CANCELAR_ORDEN_COMPLETA', 'DESCUENTO_APLICADO', 'REABRIR_CUENTA', 'CAMBIO_PIN')

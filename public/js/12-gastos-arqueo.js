@@ -275,8 +275,10 @@ window.filtrarCatalogo = function() {
     });
 };
 // 📡 ESCUCHADOR INVISIBLE: La PC de la caja atrapa los tickets de los celulares
-socket.on('ejecutar-impresion-pc', (htmlRemoto) => {
-    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+socket.on('ejecutar-impresion-pc', async (htmlRemoto, ack) => {
+    const responder = typeof ack === 'function' ? ack : () => {};
+    if (!esPantallaDeCaja()) return responder({ ok: false, reason: 'No es la caja' });
+    {
         // Sanitizar HTML remoto: solo permitir tags seguros para impresión
         const tempDiv = document.createElement('div');
         tempDiv.innerHTML = htmlRemoto;
@@ -288,8 +290,9 @@ socket.on('ejecutar-impresion-pc', (htmlRemoto) => {
                 }
             });
         });
-        document.getElementById('ticket-content').innerHTML = tempDiv.innerHTML;
-        printTicket(); // Llama a imprimir localmente en la caja
+        // Se imprime directo (sin pasar por la vista previa, que puede estar usando el cajero)
+        try { responder(await printTicket(tempDiv.innerHTML) || { ok: true }); }
+        catch (e) { responder({ ok: false, reason: e.message }); }
     }
 });
 window.verListaGastos = function() {

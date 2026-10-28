@@ -18,6 +18,36 @@ app.on('second-instance', () => {
     if (mainWindow) { if (mainWindow.isMinimized()) mainWindow.restore(); mainWindow.focus(); }
 });
 
+// ========================================================
+// REGISTRO DE ERRORES: %APPDATA%/<app>/registros/pos_YYYY-MM-DD.log (se conservan 30 días).
+// Sirve para saber qué pasó en el local cuando algo falla sin que nadie lo vea.
+// ========================================================
+function setupLogging() {
+    const dir = path.join(app.getPath('userData'), 'registros');
+    try {
+        fs.mkdirSync(dir, { recursive: true });
+        fs.readdirSync(dir).filter(f => /^pos_\d{4}-\d{2}-\d{2}\.log$/.test(f)).sort().reverse().slice(30)
+            .forEach(f => fs.unlinkSync(path.join(dir, f)));
+    } catch (_) {}
+    const write = (level, args) => {
+        try {
+            const d = new Date();
+            const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+            const text = args.map(a => (a instanceof Error ? (a.stack || a.message) : typeof a === 'object' ? JSON.stringify(a) : String(a))).join(' ');
+            fs.appendFileSync(path.join(dir, `pos_${day}.log`), `${d.toTimeString().slice(0, 8)} [${level}] ${text}\n`);
+        } catch (_) {}
+    };
+    for (const level of ['error', 'warn']) {
+        const original = console[level].bind(console);
+        console[level] = (...args) => { write(level.toUpperCase(), args); original(...args); };
+    }
+    process.on('uncaughtException', (err) => console.error('Error no controlado:', err));
+    process.on('unhandledRejection', (err) => console.error('Promesa rechazada sin manejar:', err));
+    write('INFO', [`POS iniciado, versión ${app.getVersion()}`]);
+    return dir;
+}
+let logsDir = null;
+
 // La base de datos vive en %APPDATA%/<app>, nunca dentro del instalador.
 function prepareDataDir() {
     const dataDir = app.getPath('userData');
@@ -214,6 +244,7 @@ async function buildTrayMenu() {
         { label: 'Impresora de tickets', submenu: [...printerItems, { type: 'separator' }, { label: 'Actualizar lista', click: buildTrayMenu }] },
         { label: 'Impresora de hojas (carta)', submenu: [...reportItems, { type: 'separator' }, { label: 'Actualizar lista', click: buildTrayMenu }] },
         { label: 'Abrir carpeta de respaldos', click: () => shell.openPath(path.join(app.getPath('userData'), 'respaldos')) },
+        { label: 'Abrir carpeta de registros (errores)', click: () => shell.openPath(logsDir || app.getPath('userData')) },
         { type: 'separator' },
         { label: 'Salir (desconecta a los meseros)', click: confirmQuit }
     ]));
@@ -284,6 +315,7 @@ async function confirmQuit() {
 }
 
 app.whenReady().then(async () => {
+    logsDir = setupLogging();
     createSplash();
     try {
         prepareDataDir();
@@ -291,7 +323,11 @@ app.whenReady().then(async () => {
         const { start } = require(path.join(app.getAppPath(), 'server.js'));
         await start(PORT);
         // Respaldo diario (copia consistente que incluye lo pendiente en el archivo -wal)
-        require('../src/utils/backup').dailyBackup().catch(e => console.error('Respaldo automático falló:', e.message));
+        // Se revisa cada hora: si la PC se queda encendida varios días, igual hay un respaldo por día
+        const { dailyBackup } = require('../src/utils/backup');
+        const backup = () => dailyBackup().catch(e => console.error('Respaldo automático falló:', e.message));
+        backup();
+        setInterval(backup, 60 * 60 * 1000);
         backendStarted = true;
     } catch (err) {
         dialog.showErrorBox('No se pudo iniciar el servidor',

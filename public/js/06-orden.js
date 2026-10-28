@@ -260,6 +260,18 @@ function updateOrderUI() {
     }
 }
 
+// Clave única por envío: si el Wi-Fi falla después de que el servidor guardó la orden,
+// reintentar lo mismo usa la misma clave y el servidor no la duplica en cocina.
+let pendingSend = null;
+function requestIdFor(tableId, items) {
+    const key = `${tableId}|${serializeDraft(items)}`;
+    if (!pendingSend || pendingSend.key !== key) {
+        const rnd = (window.crypto && crypto.randomUUID) ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        pendingSend = { key, id: rnd };
+    }
+    return pendingSend.id;
+}
+
 async function sendOrderToServer(shouldPrint) {
     if (newOrderItems.length === 0 || !currentTableId) return;
     const selectedWaiter = waiterSelect.value; 
@@ -280,21 +292,28 @@ async function sendOrderToServer(shouldPrint) {
         clienteLlevarActual = null; 
     }
 
-    const itemsToPrint = [...newOrderItems]; const itemsForApi = newOrderItems.map(item => ({ product_id: item.product_id, quantity: item.quantity, notes: item.notes, is_takeaway: item.is_takeaway, station: item.station, extra_price: item.extra_price }));
+    const requestId = requestIdFor(currentTableId, newOrderItems);
+    const itemsToPrint = [...newOrderItems];const itemsForApi = newOrderItems.map(item => ({ product_id: item.product_id, quantity: item.quantity, notes: item.notes, is_takeaway: item.is_takeaway, station: item.station, extra_price: item.extra_price }));
     await draftQueue;
     try {
         const esAgregado = !!currentOrderId; // platillos para una mesa que ya había pedido
-        let url = '/api/orders'; let bodyData = { table_id: currentTableId, waiter_name: selectedWaiter, items: itemsForApi, is_printed: shouldPrint, guests: currentPax, device_id: DEVICE_ID }; let orderNum = currentOrderId;
-        if (currentOrderId) { url = `/api/orders/${currentOrderId}/items`; bodyData = { items: itemsForApi, is_printed: shouldPrint, device_id: DEVICE_ID }; }
+        let url = '/api/orders'; let bodyData = { table_id: currentTableId, waiter_name: selectedWaiter, items: itemsForApi, is_printed: shouldPrint, guests: currentPax, device_id: DEVICE_ID, request_id: requestId }; let orderNum = currentOrderId;
+        if (currentOrderId) { url = `/api/orders/${currentOrderId}/items`; bodyData = { items: itemsForApi, is_printed: shouldPrint, device_id: DEVICE_ID, request_id: requestId }; }
         const response = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(bodyData) }); const result = await response.json();
-        if (response.ok) { 
+        if (response.ok) {
+            pendingSend = null;
             triggerHaptic(60);
             closeMobileSheet();
             if (!orderNum) orderNum = result.orderId; 
             const folioComanda = result.folio || currentFolio || `#${orderNum}`;
-            if (shouldPrint) { showComanda(itemsToPrint, folioComanda, currentTableSpan.textContent, selectedWaiter, esAgregado); } 
-            else { await customAlert('Adición registrada.', 'success'); } 
-            selectTable({ id: currentTableId, table_number: currentTableSpan.textContent, status: 'OCUPADA' }); loadTables(); 
+            // merged: otro dispositivo ya había abierto la mesa y los platillos se sumaron a esa cuenta
+            if (shouldPrint) { showComanda(itemsToPrint, folioComanda, currentTableSpan.textContent, selectedWaiter, esAgregado || !!result.merged); }
+            else { await customAlert('Adición registrada.', 'success'); }
+            selectTable({ id: currentTableId, table_number: currentTableSpan.textContent, status: 'OCUPADA' }); loadTables();
+        } else {
+            // El servidor rechazó el envío (cuenta ya cobrada, platillo eliminado...): los platillos siguen en pantalla
+            await customAlert(result.error || 'No se pudo enviar la orden.', 'error', 'Orden no enviada');
+            if (response.status === 409 || response.status === 404) { loadTables(); }
         }
     } catch (error) { 
         await customAlert('Falla en la red al enviar la orden.', 'error'); console.error('Network Error:', error); 
@@ -312,10 +331,11 @@ function showComanda(items, folio, mesa, mesero, esAgregado = false) {
     document.getElementById('ticket-content').innerHTML = buildComandaHTML(items, folio, mesa, mesero, esAgregado);
     isReprinting = true;
 
-    // Disparamos la impresión silenciosa directo a la Epson
-    setTimeout(() => {
-        printTicket();
-        customAlert('Comanda enviada a cocina', 'success', '¡Listo!');
+    // Disparamos la impresión silenciosa directo a la Epson.
+    // Solo confirma si de verdad salió (desde el celular la caja responde; si falla, printTicket ya avisó)
+    setTimeout(async () => {
+        const r = await printTicket();
+        if (!r || r.ok) customAlert('Comanda enviada a cocina', 'success', '¡Listo!');
     }, 500);
 }
 

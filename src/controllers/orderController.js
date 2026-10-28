@@ -11,15 +11,80 @@ async function mesaNombre(tableId) {
     return /^\d+$/.test(t.table_number) ? `Mesa ${t.table_number}` : t.table_number;
 }
 
+// Error con código HTTP para responder al cliente desde dentro de una transacción
+const httpError = (status, message) => Object.assign(new Error(message), { status });
+
+const PAYMENT_METHODS = ['EFECTIVO', 'TARJETA', 'TRANSFERENCIA'];
+
+// Platillos que manda la pantalla: tipos y rangos controlados (una cantidad negativa bajaría la cuenta)
+function sanitizeOrderItems(items) {
+    if (!Array.isArray(items) || items.length === 0 || items.length > 200) return null;
+    const clean = [];
+    for (const it of items) {
+        const productId = Number(it && it.product_id);
+        const quantity = Number(it && it.quantity);
+        const extra = round2(it && it.extra_price);
+        if (!Number.isInteger(productId) || productId <= 0) return null;
+        if (!Number.isInteger(quantity) || quantity < 1 || quantity > 999) return null;
+        if (extra < 0 || extra > 100000) return null;
+        clean.push({ product_id: productId, quantity, notes: String(it.notes || '').slice(0, 300), is_takeaway: it.is_takeaway ? 1 : 0, extra_price: extra });
+    }
+    return clean;
+}
+
+// Agrega platillos a una orden guardando el precio de ese momento (si después cambia el menú, la cuenta no cambia).
+// Los iguales (mismo platillo, nota, para llevar, extra y precio) se suman en el mismo renglón.
+async function insertItems(orderId, items) {
+    for (const item of items) {
+        const product = await dbGet(`SELECT price FROM products WHERE id = ? AND IFNULL(deleted, 0) = 0`, [item.product_id]);
+        if (!product) throw httpError(400, 'Uno de los platillos ya no existe en el menú. Actualiza la pantalla.');
+        const unitPrice = round2(product.price);
+        const existing = await dbGet(
+            `SELECT id FROM order_items
+             WHERE order_id = ? AND product_id = ? AND notes = ? AND is_takeaway = ? AND extra_price = ? AND unit_price = ? AND paid = 0`,
+            [orderId, item.product_id, item.notes, item.is_takeaway, item.extra_price, unitPrice]
+        );
+        if (existing) {
+            await dbRun(`UPDATE order_items SET quantity = quantity + ? WHERE id = ?`, [item.quantity, existing.id]);
+        } else {
+            await dbRun(
+                `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, unit_price, paid)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, 0)`,
+                [orderId, item.product_id, item.quantity, item.notes, item.is_takeaway, item.extra_price, unitPrice]
+            );
+        }
+    }
+}
+
+// Envíos repetidos: si el Wi-Fi se cae después de guardar, el celular reintenta con la misma clave
+// y recibe la respuesta original en vez de duplicar los platillos en cocina. Debe llamarse dentro de la transacción.
+async function onceByRequestId(requestId, work) {
+    const id = typeof requestId === 'string' && requestId.length >= 8 && requestId.length <= 64 ? requestId : null;
+    if (id) {
+        const prev = await dbGet(`SELECT response FROM request_log WHERE id = ?`, [id]);
+        if (prev) return { ...JSON.parse(prev.response), repeated: true };
+    }
+    const response = await work();
+    if (id) await dbRun(`INSERT INTO request_log (id, response) VALUES (?, ?)`, [id, JSON.stringify(response)]);
+    return response;
+}
+
+// Responde con el código del error (400/404/409) o 500 si fue inesperado
+function sendError(res, err) {
+    if (err.status) return res.status(err.status).json({ error: err.message });
+    console.error('[OrderController]', err);
+    res.status(500).json({ error: 'Error interno del servidor.' });
+}
+
 /**
- * Reutilizable: Hidrata una orden con sus platillos asociados.
+ * Reutilizable: Hidrata una orden con sus platillos asociados (con el precio guardado al pedirlos).
  */
 async function hydrateOrderWithItems(order) {
     if (!order) return null;
     const items = await dbAll(
-        `SELECT oi.*, p.name, p.price 
-         FROM order_items oi 
-         JOIN products p ON oi.product_id = p.id 
+        `SELECT oi.*, COALESCE(p.name, '(platillo eliminado)') AS name, COALESCE(oi.unit_price, p.price, 0) AS price
+         FROM order_items oi
+         LEFT JOIN products p ON oi.product_id = p.id
          WHERE oi.order_id = ?`,
         [order.id]
     );
@@ -41,9 +106,9 @@ async function updateOrderTotal(orderId) {
     const discount = toCents(orderRow.discount_amount);
 
     const row = await dbGet(
-        `SELECT SUM(oi.quantity * (p.price + IFNULL(oi.extra_price, 0))) as new_total 
-         FROM order_items oi 
-         JOIN products p ON oi.product_id = p.id 
+        `SELECT SUM(oi.quantity * (COALESCE(oi.unit_price, p.price, 0) + IFNULL(oi.extra_price, 0))) as new_total
+         FROM order_items oi
+         LEFT JOIN products p ON oi.product_id = p.id
          WHERE oi.order_id = ?`,
         [orderId]
     );
@@ -96,34 +161,41 @@ const getOrderById = async (req, res) => {
 };
 
 const createOrder = async (req, res) => {
-    const { table_id, waiter_name, items = [], is_printed, guests = 1 } = req.body;
+    const { table_id, waiter_name, is_printed, guests = 1, request_id } = req.body;
     const printNote = is_printed === false ? ' (Ahorro papel: Sin imprimir)' : '';
+    const items = sanitizeOrderItems(req.body.items);
+    const waiter = String(waiter_name || '').trim().slice(0, 60);
+    const pax = Math.min(Math.max(parseInt(guests, 10) || 1, 1), 99);
+
+    if (!items) return res.status(400).json({ error: 'La orden no tiene platillos válidos.' });
+    if (!waiter) return res.status(400).json({ error: 'Selecciona un mesero.' });
 
     try {
-        let folio = null;
-        const orderId = await dbTransaction(async () => {
+        const result = await dbTransaction(() => onceByRequestId(request_id, async () => {
+            const table = await dbGet(`SELECT id FROM tables WHERE id = ?`, [table_id]);
+            if (!table) throw httpError(404, 'La mesa ya no existe. Actualiza la pantalla.');
+
+            // Otro dispositivo ya abrió esta mesa: los platillos se suman a esa cuenta (nunca dos cuentas en una mesa)
+            const open = await dbGet(`SELECT id FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [table_id]);
+            if (open) {
+                await insertItems(open.id, items);
+                await updateOrderTotal(open.id);
+                await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [table_id]);
+                await dbRun(
+                    `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
+                    ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden ${await orderFolio(open.id)}${printNote}`, waiter]
+                );
+                return { message: 'Platillos agregados a la cuenta abierta', orderId: open.id, folio: await orderFolio(open.id), merged: true };
+            }
+
             await dbRun(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [table_id]);
-            folio = await nextFolio(table_id);
+            const folio = await nextFolio(table_id);
             const orderRes = await dbRun(
                 `INSERT INTO orders (table_id, waiter_name, guests, folio_type, folio_num) VALUES (?, ?, ?, ?, ?)`,
-                [table_id, waiter_name, guests, folio.type, folio.num]
+                [table_id, waiter, pax, folio.type, folio.num]
             );
             const newOrderId = orderRes.lastID;
-
-            for (const item of items) {
-                await dbRun(
-                    `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) 
-                     VALUES (?, ?, ?, ?, ?, ?, 0)`,
-                    [
-                        newOrderId,
-                        item.product_id,
-                        item.quantity,
-                        item.notes || '',
-                        item.is_takeaway ? 1 : 0,
-                        round2(item.extra_price)
-                    ]
-                );
-            }
+            await insertItems(newOrderId, items);
 
             // Esperar obligatoriamente a que termine el cálculo de total
             await updateOrderTotal(newOrderId);
@@ -133,71 +205,56 @@ const createOrder = async (req, res) => {
 
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
-                ['CREAR_ORDEN', `Orden ${folio.label} abierta en ${await mesaNombre(table_id)}${printNote}`, waiter_name]
+                ['CREAR_ORDEN', `Orden ${folio.label} abierta en ${await mesaNombre(table_id)}${printNote}`, waiter]
             );
 
-            return newOrderId;
-        });
+            return { message: 'Orden creada', orderId: newOrderId, folio: folio.label };
+        }));
 
         emitDraft(req, { table_id: Number(table_id), items: [], sent: true, device_id: String(req.body.device_id || '') });
         emitUpdate(req);
 
-        res.status(201).json({ message: 'Orden creada', orderId, folio: folio.label });
+        res.status(201).json(result);
     } catch (err) {
-        console.error('[OrderController]', err);
-        res.status(500).json({ error: 'Error interno del servidor.' });
+        sendError(res, err);
     }
 };
 
 const addItemsToOrder = async (req, res) => {
     const { id } = req.params;
-    const { items = [], is_printed } = req.body;
+    const { is_printed, request_id } = req.body;
     const printNote = is_printed === false ? ' (Ahorro papel: Sin imprimir)' : '';
+    const items = sanitizeOrderItems(req.body.items);
+    if (!items) return res.status(400).json({ error: 'No hay platillos válidos para agregar.' });
 
     try {
         let draftTableId = null;
-        await dbTransaction(async () => {
-            for (const item of items) {
-                const existing = await dbGet(
-                    `SELECT id FROM order_items 
-                     WHERE order_id = ? AND product_id = ? AND notes = ? AND is_takeaway = ? AND extra_price = ? AND paid = 0`,
-                    [id, item.product_id, item.notes || '', item.is_takeaway ? 1 : 0, round2(item.extra_price)]
-                );
+        const result = await dbTransaction(() => onceByRequestId(request_id, async () => {
+            const order = await dbGet(`SELECT waiter_name, table_id, status FROM orders WHERE id = ?`, [id]);
+            if (!order) throw httpError(404, 'La cuenta ya no existe (fue cancelada). Vuelve a abrir la mesa.');
+            if (order.status !== 'ABIERTA') throw httpError(409, 'Esta cuenta ya se cobró. Vuelve a abrir la mesa para empezar una cuenta nueva.');
 
-                if (existing) {
-                    await dbRun(`UPDATE order_items SET quantity = quantity + ? WHERE id = ?`, [item.quantity, existing.id]);
-                } else {
-                    await dbRun(
-                        `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) 
-                         VALUES (?, ?, ?, ?, ?, ?, 0)`,
-                        [id, item.product_id, item.quantity, item.notes || '', item.is_takeaway ? 1 : 0, round2(item.extra_price)]
-                    );
-                }
-            }
+            await insertItems(id, items);
 
             // Esperar obligatoriamente al recálculo
             await updateOrderTotal(id);
 
-            const order = await dbGet(`SELECT waiter_name, table_id FROM orders WHERE id = ?`, [id]);
-            const waiter = order ? order.waiter_name : 'Sistema';
-            if (order) {
-                // Lo que estaba en borrador ya se envió a cocina
-                draftTableId = order.table_id;
-                await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [draftTableId]);
-            }
+            // Lo que estaba en borrador ya se envió a cocina
+            draftTableId = order.table_id;
+            await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [draftTableId]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
-                ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden ${await orderFolio(id)}${printNote}`, waiter]
+                ['AGREGAR_ITEMS', `Se agregaron platillos a la Orden ${await orderFolio(id)}${printNote}`, order.waiter_name || 'Sistema']
             );
-        });
+            return { message: 'Items agregados y agrupados correctamente' };
+        }));
 
         if (draftTableId) emitDraft(req, { table_id: draftTableId, items: [], sent: true, device_id: String(req.body.device_id || '') });
         emitUpdate(req);
 
-        res.json({ message: 'Items agregados y agrupados correctamente' });
+        res.json(result);
     } catch (err) {
-        console.error('[OrderController]', err);
-        res.status(500).json({ error: 'Error interno del servidor.' });
+        sendError(res, err);
     }
 };
 
@@ -211,27 +268,32 @@ const payOrder = async (req, res) => {
     if (numericPaid < 0 || numericTip < 0) {
         return res.status(400).json({ error: 'Los montos no pueden ser negativos.' });
     }
+    if (!PAYMENT_METHODS.includes(payment_method)) {
+        return res.status(400).json({ error: 'Forma de pago inválida.' });
+    }
 
     try {
-        const order = await dbGet(`SELECT * FROM orders WHERE id = ?`, [id]);
-        if (!order) {
-            return res.status(404).json({ error: 'Orden no encontrada' });
-        }
-
         const result = await dbTransaction(async () => {
+            // Se lee dentro de la transacción: dos cobros a la vez (caja y celular) no pueden cobrar la misma cuenta dos veces
+            const order = await dbGet(`SELECT * FROM orders WHERE id = ?`, [id]);
+            if (!order) throw httpError(404, 'Orden no encontrada');
+            if (order.status !== 'ABIERTA') throw httpError(409, 'Esta cuenta ya estaba cobrada. Revisa el corte antes de volver a cobrar.');
+
             // Procesamiento de ítems específicos a pagar (si aplica división de cuenta)
             if (Array.isArray(items_to_pay) && items_to_pay.length > 0) {
                 for (const it of items_to_pay) {
-                    const row = await dbGet(`SELECT * FROM order_items WHERE id = ?`, [it.id]);
+                    const qty = Number(it && it.qty);
+                    if (!Number.isInteger(qty) || qty < 1) continue;
+                    const row = await dbGet(`SELECT * FROM order_items WHERE id = ? AND order_id = ?`, [it.id, id]);
                     if (row && row.paid === 0) {
-                        if (row.quantity === it.qty) {
-                            await dbRun(`UPDATE order_items SET paid = 1 WHERE id = ?`, [it.id]);
-                        } else if (row.quantity > it.qty) {
-                            await dbRun(`UPDATE order_items SET quantity = ? WHERE id = ?`, [row.quantity - it.qty, it.id]);
+                        if (row.quantity === qty) {
+                            await dbRun(`UPDATE order_items SET paid = 1 WHERE id = ?`, [row.id]);
+                        } else if (row.quantity > qty) {
+                            await dbRun(`UPDATE order_items SET quantity = ? WHERE id = ?`, [row.quantity - qty, row.id]);
                             await dbRun(
-                                `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, paid) 
-                                 VALUES (?, ?, ?, ?, ?, ?, 1)`,
-                                [row.order_id, row.product_id, it.qty, row.notes, row.is_takeaway, row.extra_price]
+                                `INSERT INTO order_items (order_id, product_id, quantity, notes, is_takeaway, extra_price, unit_price, paid)
+                                 VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
+                                [row.order_id, row.product_id, qty, row.notes, row.is_takeaway, row.extra_price, row.unit_price]
                             );
                         }
                     }
@@ -285,8 +347,7 @@ const payOrder = async (req, res) => {
 
         res.json(result.response);
     } catch (err) {
-        console.error('[OrderController]', err);
-        res.status(500).json({ error: 'Error interno del servidor.' });
+        sendError(res, err);
     }
 };
 
@@ -297,14 +358,16 @@ const cancelItem = async (req, res) => {
     try {
 
         const item = await dbGet(
-            `SELECT oi.paid, oi.quantity, p.name 
-             FROM order_items oi 
-             JOIN products p ON oi.product_id = p.id 
-             WHERE oi.id = ?`,
-            [itemId]
+            `SELECT oi.paid, oi.quantity, COALESCE(p.name, '(platillo eliminado)') AS name, o.status
+             FROM order_items oi
+             JOIN orders o ON o.id = oi.order_id
+             LEFT JOIN products p ON oi.product_id = p.id
+             WHERE oi.id = ? AND oi.order_id = ?`,
+            [itemId, orderId]
         );
 
         if (!item) return res.status(404).json({ error: 'Platillo no encontrado' });
+        if (item.status !== 'ABIERTA') return res.status(409).json({ error: 'La cuenta ya fue cobrada.' });
         if (item.paid === 1) return res.status(400).json({ error: 'Ya fue pagado.' });
 
         await dbTransaction(async () => {
@@ -335,10 +398,12 @@ const cancelOrder = async (req, res) => {
 
     try {
 
-        const order = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [id]);
+        const order = await dbGet(`SELECT table_id, status, IFNULL(cash_amount, 0) + IFNULL(card_amount, 0) AS abonado FROM orders WHERE id = ?`, [id]);
         if (!order) {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
+        // Una cuenta cobrada ya está en el corte: borrarla descuadraría la caja
+        if (order.status !== 'ABIERTA') return res.status(409).json({ error: 'Esta cuenta ya fue cobrada; no se puede cancelar.' });
         const folioCancelado = await orderFolio(id);
         const mesaCancelada = await mesaNombre(order.table_id);
 
@@ -348,7 +413,7 @@ const cancelOrder = async (req, res) => {
             await dbRun(`UPDATE tables SET status = 'LIBRE' WHERE id = ?`, [order.table_id]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
-                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden ${folioCancelado} de ${mesaCancelada}. Motivo:${reason || 'N/A'}`, 'Administrador']
+                ['CANCELAR_ORDEN_COMPLETA', `Se canceló la Orden ${folioCancelado} de ${mesaCancelada}${order.abonado > 0 ? ` (tenía abonos por $${order.abonado})` : ''}. Motivo: ${reason || 'N/A'}`, 'Administrador']
             );
         });
 
@@ -366,12 +431,16 @@ const transferOrder = async (req, res) => {
     const { new_table_id } = req.body;
 
     try {
-        const order = await dbGet(`SELECT table_id FROM orders WHERE id = ?`, [id]);
-        if (!order) {
-            return res.status(404).json({ error: 'Orden no encontrada' });
-        }
-
         await dbTransaction(async () => {
+            const order = await dbGet(`SELECT table_id, status FROM orders WHERE id = ?`, [id]);
+            if (!order) throw httpError(404, 'Orden no encontrada');
+            if (order.status !== 'ABIERTA') throw httpError(409, 'Esta cuenta ya fue cobrada.');
+            const destino = await dbGet(`SELECT id FROM tables WHERE id = ?`, [new_table_id]);
+            if (!destino) throw httpError(404, 'La mesa destino no existe.');
+            if (Number(new_table_id) === Number(order.table_id)) throw httpError(400, 'La cuenta ya está en esa mesa.');
+            const ocupada = await dbGet(`SELECT id FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [new_table_id]);
+            if (ocupada) throw httpError(409, 'La mesa destino ya tiene una cuenta abierta. Elige otra mesa.');
+
             await dbRun(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [new_table_id]);
             await dbRun(`UPDATE orders SET table_id = ? WHERE id = ?`, [new_table_id, id]);
             await dbRun(`UPDATE OR IGNORE order_drafts SET table_id = ? WHERE table_id = ?`, [new_table_id, order.table_id]);
@@ -382,8 +451,7 @@ const transferOrder = async (req, res) => {
 
         res.json({ message: 'Transferida' });
     } catch (err) {
-        console.error('[OrderController]', err);
-        res.status(500).json({ error: 'Error interno del servidor.' });
+        sendError(res, err);
     }
 };
 
@@ -398,6 +466,9 @@ const applyDiscount = async (req, res) => {
         }
 
         await dbTransaction(async () => {
+            const order = await dbGet(`SELECT status FROM orders WHERE id = ?`, [id]);
+            if (!order) throw httpError(404, 'Orden no encontrada');
+            if (order.status !== 'ABIERTA') throw httpError(409, 'La cuenta ya fue cobrada.');
             await dbRun(`UPDATE orders SET discount_amount = ? WHERE id = ?`, [numericDiscount, id]);
             await dbRun(
                 `INSERT INTO audit_logs (action, details, performed_by, created_at) VALUES (?, ?, ?, datetime('now', '-6 hours'))`,
@@ -410,8 +481,7 @@ const applyDiscount = async (req, res) => {
 
         res.json({ message: 'Descuento aplicado' });
     } catch (err) {
-        console.error('[OrderController]', err);
-        res.status(500).json({ error: 'Error interno del servidor.' });
+        sendError(res, err);
     }
 };
 
@@ -424,10 +494,17 @@ const reopenOrder = async (req, res) => {
             return res.status(404).json({ error: 'Orden no encontrada' });
         }
 
+        if (order.status !== 'PAGADA') return res.status(409).json({ error: 'La cuenta no está cobrada.' });
+
         await dbTransaction(async () => {
+            // La mesa ya tiene otra cuenta: reabrir crearía dos cuentas en la misma mesa
+            const otra = await dbGet(`SELECT id FROM orders WHERE table_id = ? AND status = 'ABIERTA' AND id != ?`, [order.table_id, id]);
+            if (otra) throw httpError(409, 'La mesa ya tiene otra cuenta abierta. Cóbrala o transfiérela antes de reabrir esta.');
             await dbRun(`UPDATE tables SET status = 'OCUPADA' WHERE id = ?`, [order.table_id]);
+            // También se anulan efectivo y tarjeta: si no, al volver a cobrar el corte contaba ese dinero dos veces
             await dbRun(
-                `UPDATE orders SET status = 'ABIERTA', amount_paid = 0, tip_amount = 0, change_amount = 0, 
+                `UPDATE orders SET status = 'ABIERTA', amount_paid = 0, tip_amount = 0, change_amount = 0,
+                 cash_amount = 0, card_amount = 0, payment_method = NULL,
                  closed_at = NULL, remaining_balance = total WHERE id = ?`,
                 [id]
             );
@@ -442,8 +519,7 @@ const reopenOrder = async (req, res) => {
 
         res.json({ message: 'Reabierta' });
     } catch (err) {
-        console.error('[OrderController]', err);
-        res.status(500).json({ error: 'Error interno del servidor.' });
+        sendError(res, err);
     }
 };
 

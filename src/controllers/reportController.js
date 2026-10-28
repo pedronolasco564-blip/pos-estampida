@@ -92,8 +92,9 @@ const deleteExpense = async (req, res) => {
 const getFondo = async (req, res) => {
     try {
         const targetDate = req.query.date;
+        if (!cashService.isDate(targetDate)) return res.status(400).json({ error: 'Fecha inválida.' });
         const row = await dbGet(`SELECT value FROM settings WHERE key = ?`, [`fondo_${targetDate}`]);
-        res.json({ fondo: row ? parseFloat(row.value) : 0 });
+        res.json({ fondo: row ? (parseFloat(row.value) || 0) : 0 });
     } catch (err) {
         console.error('[ReportController]', err);
         res.status(500).json({ error: 'Error interno del servidor.' });
@@ -104,6 +105,10 @@ const setFondo = async (req, res) => {
     try {
         const { pin, date, amount } = req.body;
         const targetDate = date;
+        const fondo = round2(amount);
+        // Un fondo con texto o negativo dejaba el corte en "NaN"
+        if (!cashService.isDate(targetDate)) return res.status(400).json({ error: 'Fecha inválida.' });
+        if (amount === '' || amount === null || !(Number(amount) >= 0) || fondo > 1000000) return res.status(400).json({ error: 'Monto de fondo inválido.' });
 
         const isPinValid = await verifyAdminPin(pin);
         if (!isPinValid) {
@@ -112,7 +117,7 @@ const setFondo = async (req, res) => {
 
         await dbRun(
             `INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)`,
-            [`fondo_${targetDate}`, amount]
+            [`fondo_${targetDate}`, String(fondo)]
         );
 
         res.json({ message: 'Fondo guardado exitosamente' });
@@ -132,16 +137,11 @@ const backupDatabase = async (req, res) => {
             return res.status(403).json({ error: 'PIN INCORRECTO' });
         }
 
-        // En modo WAL, forzamos un checkpoint completo para que el archivo .db contenga
-        // todas las transacciones recientes antes de descargarlo.
-        try {
-            await dbExec('PRAGMA wal_checkpoint(TRUNCATE)');
-        } catch (checkpointErr) {
-            console.warn('Aviso: wal_checkpoint TRUNCATE no completó:', checkpointErr.message);
-        }
-
-        const { DB_PATH: dbPath } = require('../config/paths');
-        const fecha = require('../utils/backup').localDate();
+        // Copia consistente (VACUUM INTO) en lugar de descargar el archivo en uso: si alguien cobra
+        // mientras se descarga, la copia sigue siendo válida.
+        const { backupTo, localDate } = require('../utils/backup');
+        const fecha = localDate();
+        const dbPath = await backupTo('descarga_manual.db');
 
         res.download(dbPath, `Respaldo_Estampida_${fecha}.db`, (err) => {
             if (err && !res.headersSent) {
