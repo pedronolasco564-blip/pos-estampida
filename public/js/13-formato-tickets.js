@@ -6,7 +6,8 @@
 // ========================================================
 const NEGOCIO = {
     nombre: 'ASADERO LA ESTAMPIDA',
-    direccion: 'Blvd Fco. Fdez. Arteaga 2096, Tuxtepec, Oax.',
+    calle: 'Blvd. Fco. Fdez. Arteaga #2096',
+    ciudad: 'Tuxtepec, Oaxaca',
     telefono: '287 134 7643'
 };
 let ticketConfig = { whatsapp: NEGOCIO.telefono };
@@ -60,6 +61,29 @@ const TK_CSS = `<style>
 .tk .cm-nota { font-size: 11pt; font-weight: 700; padding-left: 9.5mm; }
 </style>`;
 
+// Tickets para el cliente (cuenta, cobro, reimpresión): formato formal de ticket, letra de máquina y columnas
+const TKF_CSS = `<style>
+.tkf { font-family: 'Courier New', Courier, monospace; font-size: 9.5pt; line-height: 1.25; color: #000; font-weight: 700; text-align: left; }
+.tkf * { margin: 0; padding: 0; color: #000; }
+.tkf .c { text-align: center; }
+.tkf .f-nom { font-size: 17pt; font-weight: 900; line-height: 1.05; letter-spacing: 1px; margin-bottom: 1mm; }
+.tkf .f-dir { font-size: 8.5pt; }
+.tkf .f-dbl { border-top: 3px double #000; margin: 1.4mm 0; }
+.tkf .f-sep { border-top: 1px dashed #000; margin: 1.4mm 0; }
+.tkf .f-tit { font-size: 11pt; font-weight: 900; letter-spacing: 1px; }
+.tkf .f-row { display: flex; justify-content: space-between; gap: 2mm; }
+.tkf .f-row > span:last-child { white-space: nowrap; text-align: right; }
+.tkf .f-tab { display: grid; grid-template-columns: 8mm 1fr 16mm 18mm; column-gap: 1mm; font-size: 9pt; }
+.tkf .f-tab .r { text-align: right; white-space: nowrap; }
+.tkf .f-th { border-bottom: 1px solid #000; padding-bottom: 0.4mm; margin-bottom: 0.8mm; font-size: 8pt; }
+.tkf .f-it { margin-bottom: 0.6mm; }
+.tkf .f-tot { display: flex; justify-content: flex-end; gap: 3mm; }
+.tkf .f-tot > span:last-child { min-width: 22mm; text-align: right; white-space: nowrap; }
+.tkf .f-total { font-size: 13pt; font-weight: 900; margin: 0.8mm 0; }
+.tkf .f-tag { border: 0.5mm solid #000; text-align: center; font-weight: 900; padding: 0.5mm 0; margin: 1.2mm 0; }
+.tkf .f-pie { font-size: 8.5pt; }
+</style>`;
+
 const tkSep = '<div class="sep"></div>';
 const tkRow = (left, right, cls = '') => `<div class="row ${cls}"><span>${left}</span><span>${right}</span></div>`;
 const tkMoney = (n) => fmtMoney(n);
@@ -78,16 +102,20 @@ function tkFechaBD(s) {
     return m ? `${m[3]}/${m[2]}/${m[1]} ${m[4]}:${m[5]}` : escapeHtml(s || '');
 }
 
-function tkEncabezado() {
-    return `<div class="c"><div class="neg">${NEGOCIO.nombre}</div><div class="sm">${NEGOCIO.direccion}</div><div class="sm">Tel ${NEGOCIO.telefono}</div></div>`;
+// Encabezado formal: nombre en dos renglones, dirección, teléfono y título enmarcado
+function tkEncabezado(titulo) {
+    return `<div class="c"><div class="f-nom">ASADERO<br>LA ESTAMPIDA</div>`
+        + `<div class="f-dir">${NEGOCIO.calle}<br>${NEGOCIO.ciudad}<br>Tel. ${NEGOCIO.telefono}</div></div>`
+        + `<div class="f-dbl"></div><div class="c f-tit">${titulo}</div><div class="f-dbl"></div>`;
 }
 
-// Datos de la cuenta en dos o tres renglones
+// FOLIO / MESA, fecha / PAX y mesero
 function tkDatosCuenta({ folio, mesa, fecha, pax, mesero }) {
-    let html = tkRow(`Folio ${escapeHtml(folio)}`, tkMesa(mesa), 'b');
-    html += tkRow(fecha, pax ? `${pax} pers.` : '');
-    if (mesero) html += `<div>Atendió: ${escapeHtml(mesero)}</div>`;
-    return html;
+    const mesaTxt = /^\d+$/.test(String(mesa || '').trim()) ? `MESA: ${escapeHtml(mesa)}` : escapeHtml(mesa || '');
+    let html = `<div class="f-row"><span>FOLIO: ${escapeHtml(folio)}</span><span>${mesaTxt}</span></div>`;
+    html += `<div class="f-row"><span>Fecha: ${fecha}</span><span>${pax ? `PAX: ${pax}` : ''}</span></div>`;
+    if (mesero) html += `<div>Mesero: ${escapeHtml(mesero)}</div>`;
+    return html + '<div class="f-sep"></div>';
 }
 
 // Agrupa platillos iguales (mismo nombre y precio) sin importar las notas
@@ -102,19 +130,24 @@ function tkAgrupar(items) {
 }
 const tkSuma = (grupos) => Math.round(grupos.reduce((acc, g) => acc + g.unit * g.qty * 100, 0)) / 100;
 
-// Un renglón por platillo con su importe; el precio unitario solo cuando hay más de uno
+// Tabla de platillos: CANT / DESCRIPCIÓN / P.U. / IMPORTE
 function tkItems(grupos) {
-    return grupos.map(g => {
-        let html = `<div class="it">${tkRow(`${g.qty} ${escapeHtml(g.name)}`, tkMoney(g.unit * g.qty))}`;
-        if (g.qty > 1) html += `<div class="pu">${g.qty} x ${tkMoney(g.unit)}</div>`;
-        return html + '</div>';
-    }).join('');
+    let html = '<div class="f-tab f-th"><span>CANT</span><span>DESCRIPCIÓN</span><span class="r">P.U.</span><span class="r">IMPORTE</span></div>';
+    grupos.forEach(g => {
+        html += `<div class="f-tab f-it"><span>${g.qty}</span><span>${escapeHtml(g.name)}</span><span class="r">${tkMoney(g.unit)}</span><span class="r">${tkMoney(g.unit * g.qty)}</span></div>`;
+    });
+    return html + '<div class="f-sep"></div>';
 }
 
-function tkPie({ folio, factura = true, leyenda = 'Este ticket no es comprobante fiscal' }) {
-    let html = tkSep + '<div class="c"><div class="b">Gracias por su visita</div>';
-    if (factura && ticketConfig.whatsapp) html += `<div class="sm">Factura: envíe su folio ${escapeHtml(folio)} por WhatsApp al <span style="white-space:nowrap">${escapeHtml(ticketConfig.whatsapp)}</span></div>`;
-    return html + `<div class="sm">${leyenda}</div></div>`;
+// Renglón de totales alineado a la derecha
+const tkTot = (label, amount, cls = '') => `<div class="f-tot ${cls}"><span>${label}</span><span>${amount}</span></div>`;
+
+function tkPie({ folio, factura = true, leyenda = 'No es comprobante fiscal' }) {
+    let html = '<div class="f-dbl"></div><div class="c"><div>¡Gracias por su preferencia!</div><div>Vuelva pronto</div>';
+    if (factura && ticketConfig.whatsapp) {
+        html += `<div class="f-pie" style="margin-top:1.5mm">Facturación: envíe su folio ${escapeHtml(folio)} por WhatsApp al <span style="white-space:nowrap">${escapeHtml(ticketConfig.whatsapp)}</span></div>`;
+    }
+    return html + `<div class="f-pie" style="margin-top:1mm">* ${leyenda} *</div></div>`;
 }
 
 // ========================================================
@@ -149,36 +182,37 @@ function buildComandaHTML(items, folio, mesa, mesero, esAgregado) {
 // TICKET DE COBRO
 // ========================================================
 function buildCobroHTML({ folio, mesa, pax, mesero, grupos, abono, descuento = 0, total, propina = 0, metodo, pagado, cambio, saldo = 0 }) {
-    let html = `${TK_CSS}<div class="tk">${tkEncabezado()}${tkSep}`;
-    html += tkDatosCuenta({ folio, mesa, fecha: tkFecha(), pax, mesero }) + tkSep;
+    let html = `${TKF_CSS}<div class="tkf">${tkEncabezado('TICKET DE COBRO')}`;
+    html += tkDatosCuenta({ folio, mesa, fecha: tkFecha(), pax, mesero });
 
     if (grupos) {
-        html += tkItems(grupos) + tkSep;
-        if (descuento > 0.005) html += tkRow('Subtotal', tkMoney(total + descuento)) + tkRow('Descuento', `-${tkMoney(descuento)}`);
+        html += tkItems(grupos);
+        if (descuento > 0.005) html += tkTot('SUBTOTAL', tkMoney(total + descuento)) + tkTot('DESCUENTO', `-${tkMoney(descuento)}`);
     } else {
-        html += tkRow('Abono a cuenta', tkMoney(abono)) + tkSep;
+        html += tkTot('ABONO A CUENTA', tkMoney(abono)) + '<div class="f-sep"></div>';
     }
-    if (propina > 0) html += tkRow('Consumo', tkMoney(total)) + tkRow('Propina', tkMoney(propina));
-    html += tkRow('TOTAL', `$${tkMoney(total + propina)}`, 'tot');
-    html += tkRow(tkMetodo(metodo), tkMoney(pagado));
-    if (cambio > 0.005) html += tkRow('Cambio', tkMoney(cambio));
-    if (saldo > 0.005) html += `<div class="tag" style="margin-top:1.5mm">SALDO PENDIENTE $${tkMoney(saldo)}</div>`;
+    if (propina > 0) html += tkTot('CONSUMO', tkMoney(total)) + tkTot('PROPINA', tkMoney(propina));
+    html += tkTot('TOTAL', `$${tkMoney(total + propina)}`, 'f-total');
+    html += '<div class="f-sep"></div>';
+    html += tkTot(tkMetodo(metodo).toUpperCase(), tkMoney(pagado));
+    if (cambio > 0.005) html += tkTot('CAMBIO', tkMoney(cambio));
+    if (saldo > 0.005) html += `<div class="f-tag">SALDO PENDIENTE: $${tkMoney(saldo)}</div>`;
     return html + tkPie({ folio }) + '</div>';
 }
 
 // ========================================================
-// PRECUENTA (cuenta de mesa, dividida o parcial por consumo)
+// CUENTA DE MESA (completa, dividida o parcial por consumo)
 // ========================================================
-function buildPrecuentaHTML({ titulo = 'PRECUENTA', folio, mesa, pax, mesero, grupos, descuento = 0, personas = 1, factura = false }) {
+function buildPrecuentaHTML({ titulo = 'CUENTA DE MESA', folio, mesa, pax, mesero, grupos, descuento = 0, personas = 1, factura = false }) {
     const subtotal = tkSuma(grupos);
     const total = Math.max(0, Math.round((subtotal - descuento) * 100) / 100);
-    let html = `${TK_CSS}<div class="tk">${tkEncabezado()}${tkSep}<div class="c b">${titulo}</div>`;
-    html += tkDatosCuenta({ folio, mesa, fecha: tkFecha(), pax, mesero }) + tkSep;
-    html += tkItems(grupos) + tkSep;
-    if (descuento > 0.005) html += tkRow('Subtotal', tkMoney(subtotal)) + tkRow('Descuento', `-${tkMoney(descuento)}`);
-    html += tkRow('TOTAL', `$${tkMoney(total)}`, 'tot');
-    if (personas > 1) html += tkRow(`Entre ${personas} personas`, `$${tkMoney(montoPorPersona(total, personas))} c/u`, 'b');
-    return html + tkPie({ folio, factura, leyenda: 'Este documento no es comprobante de pago' }) + '</div>';
+    let html = `${TKF_CSS}<div class="tkf">${tkEncabezado(titulo)}`;
+    html += tkDatosCuenta({ folio, mesa, fecha: tkFecha(), pax, mesero });
+    html += tkItems(grupos);
+    if (descuento > 0.005) html += tkTot('SUBTOTAL', tkMoney(subtotal)) + tkTot('DESCUENTO', `-${tkMoney(descuento)}`);
+    html += tkTot('TOTAL A PAGAR', `$${tkMoney(total)}`, 'f-total');
+    if (personas > 1) html += `<div class="f-tag">ENTRE ${personas} PERSONAS: $${tkMoney(montoPorPersona(total, personas))} C/U</div>`;
+    return html + tkPie({ folio, factura, leyenda: 'No es comprobante de pago' }) + '</div>';
 }
 
 // ========================================================
@@ -193,18 +227,19 @@ function buildReimpresionHTML(order, mesa) {
     const efectivo = Number(order.cash_amount) || 0;
     const tarjeta = Number(order.card_amount) || 0;
 
-    let html = `${TK_CSS}<div class="tk"><div class="tag">REIMPRESIÓN</div>${tkEncabezado()}${tkSep}`;
-    html += tkDatosCuenta({ folio, mesa, fecha: tkFechaBD(order.closed_at || order.created_at), pax: order.guests, mesero: order.waiter_name }) + tkSep;
-    html += tkItems(grupos) + tkSep;
-    if (descuento > 0.005) html += tkRow('Subtotal', tkMoney(total + descuento)) + tkRow('Descuento', `-${tkMoney(descuento)}`);
-    if (propina > 0) html += tkRow('Consumo', tkMoney(total)) + tkRow('Propina', tkMoney(propina));
-    html += tkRow('TOTAL', `$${tkMoney(total + propina)}`, 'tot');
+    let html = `${TKF_CSS}<div class="tkf">${tkEncabezado('REIMPRESIÓN DE TICKET')}`;
+    html += tkDatosCuenta({ folio, mesa, fecha: tkFechaBD(order.closed_at || order.created_at), pax: order.guests, mesero: order.waiter_name });
+    html += tkItems(grupos);
+    if (descuento > 0.005) html += tkTot('SUBTOTAL', tkMoney(total + descuento)) + tkTot('DESCUENTO', `-${tkMoney(descuento)}`);
+    if (propina > 0) html += tkTot('CONSUMO', tkMoney(total)) + tkTot('PROPINA', tkMoney(propina));
+    html += tkTot('TOTAL', `$${tkMoney(total + propina)}`, 'f-total');
+    html += '<div class="f-sep"></div>';
     if (efectivo > 0 && tarjeta > 0) {
-        html += tkRow('Efectivo', tkMoney(efectivo)) + tkRow('Tarjeta / transf.', tkMoney(tarjeta));
+        html += tkTot('EFECTIVO', tkMoney(efectivo)) + tkTot('TARJETA/TRANSF.', tkMoney(tarjeta));
     } else {
-        html += tkRow(tkMetodo(order.payment_method || 'EFECTIVO'), tkMoney(order.amount_paid || total));
+        html += tkTot(tkMetodo(order.payment_method || 'EFECTIVO').toUpperCase(), tkMoney(order.amount_paid || total));
     }
-    if ((Number(order.change_amount) || 0) > 0.005) html += tkRow('Cambio', tkMoney(order.change_amount));
+    if ((Number(order.change_amount) || 0) > 0.005) html += tkTot('CAMBIO', tkMoney(order.change_amount));
     return html + tkPie({ folio }) + '</div>';
 }
 

@@ -11,7 +11,7 @@ function generatePreCheckHTML(itemsArray, title, fraction = 1, showQR = false, d
 function showStandardPreCheck(wantsInvoice) {
     let discount = parseFloat(document.getElementById('pay-discount-display').textContent) || 0;
     // Aquí cambiamos el título feo por "CUENTA DE MESA"
-    let html = generatePreCheckHTML(savedOrderItems, 'PRECUENTA', 1, wantsInvoice, discount);
+    let html = generatePreCheckHTML(savedOrderItems, 'CUENTA DE MESA', 1, wantsInvoice, discount);
     document.getElementById('ticket-content').innerHTML = html;
     isReprinting = true;
     document.getElementById('ticket-modal').style.display = 'flex';
@@ -20,7 +20,7 @@ function showStandardPreCheck(wantsInvoice) {
 function showDividedPreCheck(personas, wantsInvoice) {
     let discount = parseFloat(document.getElementById('pay-discount-display').textContent) || 0;
     // Un solo papel con el total y lo que paga cada persona (antes se imprimía la lista completa una vez por persona)
-    document.getElementById('ticket-content').innerHTML = generatePreCheckHTML(savedOrderItems, 'PRECUENTA', personas, wantsInvoice, discount);
+    document.getElementById('ticket-content').innerHTML = generatePreCheckHTML(savedOrderItems, 'CUENTA DE MESA', personas, wantsInvoice, discount);
     isReprinting = true;
     document.getElementById('ticket-modal').style.display = 'flex';
 }
