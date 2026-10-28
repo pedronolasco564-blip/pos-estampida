@@ -385,6 +385,17 @@ header#main-header {
     border-radius: var(--radius-md);
     border: 1px solid var(--border-subtle);
 }
+/* Lista de mesas de la pestaña activa: una columna en la PC; cuadrícula en celular/tablet (ver media query) */
+.tables-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    width: 100%;
+}
+.tables-list[hidden] {
+    display: none !important;
+}
+
 .table-tab-btn {
     flex: 1;
     padding: 8px 4px;
@@ -1159,23 +1170,30 @@ header#main-header {
         gap: 14px;
     }
 
-    /* Carrusel Horizontal de Mesas en Móvil */
+    /* Mesas en celular/tablet: pestañas arriba a todo lo ancho y mesas en cuadrícula (3 columnas en celular, más en tablet) */
     .tables-section {
         min-height: auto;
         padding: 10px;
     }
     #tables-grid {
-        display: flex;
-        flex-direction: row;
-        overflow-x: auto;
-        flex-wrap: nowrap;
-        padding-bottom: 8px;
-        -webkit-overflow-scrolling: touch;
-        gap: 10px;
+        display: block;
+    }
+    #tables-grid .table-tabs-container {
+        width: 100%;
+        box-sizing: border-box;
+    }
+    #tables-grid .table-tab-btn {
+        padding: 10px 4px;
+        font-size: 13px;
+    }
+    .tables-list {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+        gap: 8px;
     }
     #tables-grid .btn-table {
-        flex: 0 0 120px;
         min-height: 72px;
+        min-width: 0;
     }
 
     .menu-section {

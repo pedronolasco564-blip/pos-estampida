@@ -148,8 +148,8 @@ async function loadTables() {
                 <button onclick="switchTableTab('LLEVAR')" class="table-tab-btn ${currentTableTab === 'LLEVAR' ? 'active-llevar' : ''}">🛍️ LLEVAR</button>
             </div>
             
-            <div id="grid-comedor" style="display: ${currentTableTab === 'COMEDOR' ? 'flex' : 'none'}; flex-direction: column; gap: 10px; width: 100%;"></div>
-            <div id="grid-llevar" style="display: ${currentTableTab === 'LLEVAR' ? 'flex' : 'none'}; flex-direction: column; gap: 10px; width: 100%;"></div>
+            <div id="grid-comedor" class="tables-list" ${currentTableTab === 'COMEDOR' ? '' : 'hidden'}></div>
+            <div id="grid-llevar" class="tables-list" ${currentTableTab === 'LLEVAR' ? '' : 'hidden'}></div>
         `;
         
         const gridComedor = document.getElementById('grid-comedor');
@@ -171,7 +171,7 @@ async function loadTables() {
             const btn = document.createElement('button'); 
             btn.className = `btn-table ${table.status === 'OCUPADA' ? 'ocupada' : ''}`;
             
-            // Forzamos el botón a ocupar el 100% de la columna angosta
+            // El botón ocupa todo su lugar (columna angosta en la PC, cuadro de la cuadrícula en celular)
             btn.style.width = '100%';
             btn.style.minHeight = '75px';
             btn.style.margin = '0';
@@ -228,7 +228,14 @@ async function loadTables() {
                 btn.innerHTML = `${textoMesa}${draftBadge}`; 
             }
             btn.dataset.id = table.id;
-            btn.onclick = () => selectTable(table);
+            btn.onclick = () => {
+                selectTable(table);
+                // En celular/tablet las mesas van arriba del menú: al elegir una, se baja solo al menú para empezar a pedir
+                if (window.matchMedia('(max-width: 950px)').matches) {
+                    const menu = document.querySelector('.menu-section');
+                    if (menu) setTimeout(() => menu.scrollIntoView({ behavior: 'smooth', block: 'start' }), 150);
+                }
+            };
             if (esLlevar) { gridLlevar.appendChild(btn); } else { gridComedor.appendChild(btn); }
         });
 
