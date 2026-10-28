@@ -109,7 +109,7 @@ function sendError(res, err) {
 async function hydrateOrderWithItems(order) {
     if (!order) return null;
     const items = await dbAll(
-        `SELECT oi.*, COALESCE(p.name, '(platillo eliminado)') AS name, COALESCE(oi.unit_price, p.price, 0) AS price
+        `SELECT oi.*, COALESCE(p.name, '(platillo eliminado)') AS name, COALESCE(oi.unit_price, p.price, 0) AS price, COALESCE(p.station, 'COCINA') AS station 
          FROM order_items oi
          LEFT JOIN products p ON oi.product_id = p.id
          WHERE oi.order_id = ?`,
@@ -199,7 +199,7 @@ const createOrder = async (req, res) => {
 
     try {
         const result = await dbTransaction(() => onceByRequestId(request_id, async () => {
-            const table = await dbGet(`SELECT id FROM tables WHERE id = ?`, [table_id]);
+            const table = await dbGet(`SELECT id FROM tables WHERE id = ? AND IFNULL(deleted, 0) = 0`, [table_id]);
             if (!table) throw httpError(404, 'La mesa ya no existe. Actualiza la pantalla.');
 
             // Otro dispositivo ya abrió esta mesa: los platillos se suman a esa cuenta (nunca dos cuentas en una mesa)
@@ -473,7 +473,7 @@ const transferOrder = async (req, res) => {
             const order = await dbGet(`SELECT table_id, status FROM orders WHERE id = ?`, [id]);
             if (!order) throw httpError(404, 'Orden no encontrada');
             if (order.status !== 'ABIERTA') throw httpError(409, 'Esta cuenta ya fue cobrada.');
-            const destino = await dbGet(`SELECT id FROM tables WHERE id = ?`, [new_table_id]);
+            const destino = await dbGet(`SELECT id FROM tables WHERE id = ? AND IFNULL(deleted, 0) = 0`, [new_table_id]);
             if (!destino) throw httpError(404, 'La mesa destino no existe.');
             if (Number(new_table_id) === Number(order.table_id)) throw httpError(400, 'La cuenta ya está en esa mesa.');
             const ocupada = await dbGet(`SELECT id FROM orders WHERE table_id = ? AND status = 'ABIERTA'`, [new_table_id]);

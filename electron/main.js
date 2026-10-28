@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, ipcMain } = require('electron');
+const { app, BrowserWindow, Tray, Menu, dialog, nativeImage, shell, ipcMain, powerSaveBlocker } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const os = require('os');
@@ -77,12 +77,17 @@ function setupAutoUpdate() {
     const { autoUpdater } = require('electron-updater');
     autoUpdater.autoInstallOnAppQuit = true;
     autoUpdater.on('error', (e) => console.error('Actualizador:', e.message));
-    autoUpdater.on('update-downloaded', (info) => {
+    autoUpdater.on('update-downloaded', async (info) => {
         if (Date.now() - appStartedAt < 3 * 60 * 1000) {
-            // Recién encendido: se instala ya (tarda unos segundos y el POS vuelve a abrir solo).
-            quitting = true;
-            autoUpdater.quitAndInstall(true, true);
-            return;
+            // Recién encendido: se instala ya (tarda unos segundos y el POS vuelve a abrir solo),
+            // salvo que haya cuentas abiertas (p. ej. la PC se reinició por un apagón en pleno servicio).
+            let abiertas = 0;
+            try { abiertas = (await require('../src/utils/dbHelper').dbGet(`SELECT COUNT(*) AS n FROM orders WHERE status = 'ABIERTA'`)).n; } catch (_) {}
+            if (!abiertas) {
+                quitting = true;
+                autoUpdater.quitAndInstall(true, true);
+                return;
+            }
         }
         pendingUpdate = { version: info.version, install: () => { quitting = true; autoUpdater.quitAndInstall(true, true); } };
         if (tray) {
@@ -200,6 +205,11 @@ function createMainWindow() {
     });
     mainWindow.maximize();
     mainWindow.loadURL(`http://localhost:${PORT}`);
+    // Si la pantalla de la caja se cae (falta de memoria, error de video), se recarga sola; el servidor sigue.
+    mainWindow.webContents.on('render-process-gone', (e, details) => {
+        console.error('La pantalla de la caja se cerró:', details.reason);
+        if (!mainWindow.isDestroyed()) setTimeout(() => mainWindow.reload(), 1000);
+    });
     mainWindow.once('ready-to-show', () => {
         if (splash) { splash.close(); splash = null; }
         mainWindow.show();
@@ -385,6 +395,9 @@ app.whenReady().then(async () => {
     }
     createMainWindow();
     createTray();
+    // La PC no se suspende mientras el POS está abierto: si se dormía, los celulares perdían el servidor.
+    // (La pantalla sí puede apagarse.)
+    powerSaveBlocker.start('prevent-app-suspension');
 
     // Que el POS se abra solo al encender la PC (solo en la versión instalada).
     if (app.isPackaged) app.setLoginItemSettings({ openAtLogin: true });

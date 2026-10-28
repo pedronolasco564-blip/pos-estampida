@@ -229,7 +229,7 @@ function updateOrderUI() {
         btnSendSave.textContent = currentOrderId ? '💾 ADICIÓN RÁPIDA' : '💾 SOLO REGISTRAR'; 
         btnSendPrint.disabled = false; btnSendSave.disabled = false; 
         document.getElementById('payment-buttons-container').style.display = 'none'; paymentPanel.style.display = 'none'; if(btnCancelOrder) btnCancelOrder.style.display = 'none';
-    } else if (currentOrderId) { 
+    } else if (currentOrderId) {
         actionButtonsContainer.style.display = 'none'; 
         document.getElementById('payment-buttons-container').style.display = 'flex'; 
         if(btnCancelOrder) btnCancelOrder.style.display = 'block';
@@ -239,6 +239,9 @@ function updateOrderUI() {
         btnSendPrint.disabled = true; btnSendSave.disabled = true; 
         document.getElementById('payment-buttons-container').style.display = 'none'; paymentPanel.style.display = 'none'; if(btnCancelOrder) btnCancelOrder.style.display = 'none'; 
     }
+
+    const btnReprintComanda = document.getElementById('btn-reprint-comanda');
+    if (btnReprintComanda) btnReprintComanda.style.display = currentOrderId && savedOrderItems.length ? 'inline-block' : 'none';
 
     // Actualización de la barra flotante móvil (#mobile-order-bar)
     const mobileOrderBar = document.getElementById('mobile-order-bar');
@@ -332,8 +335,8 @@ async function sendOrderToServer(shouldPrint) {
 
 btnSendPrint.onclick = () => sendOrderToServer(true); btnSendSave.onclick = () => sendOrderToServer(false);
 
-function showComanda(items, folio, mesa, mesero, esAgregado = false) {
-    document.getElementById('ticket-content').innerHTML = buildComandaHTML(items, folio, mesa, mesero, esAgregado);
+function showComanda(items, folio, mesa, mesero, esAgregado = false, extra = '') {
+    document.getElementById('ticket-content').innerHTML = buildComandaHTML(items, folio, mesa, mesero, esAgregado, extra);
     isReprinting = true;
 
     // Disparamos la impresión silenciosa directo a la Epson.
@@ -344,7 +347,15 @@ function showComanda(items, folio, mesa, mesero, esAgregado = false) {
     }, 500);
 }
 
-function closeComandaModal() { document.getElementById('comanda-modal').style.display = 'none'; }
+// Reimprime la comanda completa de la cuenta abierta (se acabó el papel, se atoró o se perdió en cocina)
+window.reimprimirComanda = async function() {
+    if (!currentOrderId || !savedOrderItems.length) return;
+    if (!(await customConfirm('¿Reimprimir la comanda completa de esta mesa para cocina y barra?', 'Reimprimir comanda'))) return;
+    const pendientes = savedOrderItems.filter(i => i.paid !== 1);
+    showComanda(pendientes.length ? pendientes : savedOrderItems, currentFolio || `#${currentOrderId}`, currentTableSpan.textContent.split(' (')[0], waiterSelect.value, false, 'REIMPRESIÓN');
+};
+
+function closeComandaModal() {document.getElementById('comanda-modal').style.display = 'none'; }
 async function printComanda() { /* Vacío por compatibilidad */ }
 btnCancelOrder.onclick = () => openCancelModal('order');
 

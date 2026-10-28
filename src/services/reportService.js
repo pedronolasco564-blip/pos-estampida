@@ -10,9 +10,9 @@ const { round2 } = require('../utils/money');
  */
 async function calculateCorteData(targetDate) {
     const ordersQuery = `
-        SELECT o.*, t.table_number, ${folioSql('o')} AS folio
-        FROM orders o 
-        JOIN tables t ON o.table_id = t.id 
+        SELECT o.*, COALESCE(t.table_number, 'Mesa eliminada') AS table_number, ${folioSql('o')} AS folio
+        FROM orders o
+        LEFT JOIN tables t ON o.table_id = t.id 
         WHERE o.status = 'PAGADA' AND DATE(o.closed_at) = ?
     `;
 

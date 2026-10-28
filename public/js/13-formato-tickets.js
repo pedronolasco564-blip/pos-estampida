@@ -153,9 +153,9 @@ function tkPie({ folio, factura = true, leyenda = 'No es comprobante fiscal' }) 
 // ========================================================
 // COMANDA (cocina y barra): grande, sin precios
 // ========================================================
-function buildComandaHTML(items, folio, mesa, mesero, esAgregado) {
+function buildComandaHTML(items, folio, mesa, mesero, esAgregado, extra = '') {
     const llevar = tkEsLlevar(mesa);
-    const etiquetas = [llevar ? 'PARA LLEVAR' : '', esAgregado ? 'AGREGADO' : ''].filter(Boolean).join(' · ');
+    const etiquetas = [extra, llevar ? 'PARA LLEVAR' : '', esAgregado ? 'AGREGADO' : ''].filter(Boolean).join(' · ');
     const hora = new Date().toLocaleTimeString('es-MX', { hour: '2-digit', minute: '2-digit', hour12: false });
 
     let html = `${TK_CSS}<div class="tk">`;

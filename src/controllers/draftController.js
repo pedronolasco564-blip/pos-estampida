@@ -55,7 +55,7 @@ const saveDraft = async (req, res) => {
         if (!Number.isInteger(tableId) || items === null) {
             return res.status(400).json({ error: 'Borrador inválido.' });
         }
-        const table = await dbGet(`SELECT id FROM tables WHERE id = ?`, [tableId]);
+        const table = await dbGet(`SELECT id FROM tables WHERE id = ? AND IFNULL(deleted, 0) = 0`, [tableId]);
         if (!table) return res.status(404).json({ error: 'Mesa no encontrada.' });
 
         const before = await dbGet(`SELECT 1 AS x FROM order_drafts WHERE table_id = ?`, [tableId]);

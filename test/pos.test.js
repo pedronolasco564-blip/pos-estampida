@@ -971,3 +971,50 @@ describe('Mesas siempre al día: una cuenta abierta por mesa', () => {
         assert.equal(t.current_total, 135);
     });
 });
+
+describe('Arranque de operación: integridad del historial y durabilidad', () => {
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const nombre = `HIST_${Date.now()}`;
+    let tableId, productId, orderId;
+
+    before(async () => {
+        tableId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [nombre])).lastID;
+        productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Historial', 120, 'BARRA', 'GENERAL')`)).lastID;
+        orderId = (await (await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 1 }], is_printed: false }))).json()).orderId;
+        await fetch(`${testBaseUrl}/api/orders/${orderId}/pay`, json('POST', { payment_method: 'EFECTIVO', amount_paid: 120 }));
+    });
+    after(async () => {
+        await dbRun('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+        await dbRun('DELETE FROM orders WHERE id = ?', [orderId]);
+        await dbRun('DELETE FROM tables WHERE id = ?', [tableId]);
+        await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+    });
+
+    test('Borrar una mesa con ventas la oculta, pero sus ventas siguen en el corte', async () => {
+        const today = (await dbGet(`SELECT date('now', '-6 hours') AS d`)).d;
+        const antes = (await (await fetch(`${testBaseUrl}/api/reports/corte?date=${today}`)).json()).summary.total_general;
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/tables/${tableId}`, { method: 'DELETE' })).status, 200);
+        const lista = (await (await fetch(`${testBaseUrl}/api/catalog/tables`)).json()).tables;
+        assert.ok(!lista.some(t => t.id === tableId), 'ya no aparece en las mesas');
+        const corte = await (await fetch(`${testBaseUrl}/api/reports/corte?date=${today}`)).json();
+        assert.equal(corte.summary.total_general, antes, 'el total del corte no cambia');
+        assert.ok(corte.orders.some(o => o.id === orderId && o.table_number === nombre));
+    });
+
+    test('Una mesa oculta no acepta cuentas nuevas y al crearla de nuevo reaparece', async () => {
+        const r = await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 1 }] }));
+        assert.equal(r.status, 404);
+        assert.equal((await fetch(`${testBaseUrl}/api/catalog/tables`, json('POST', { table_number: nombre }))).status, 200);
+        const lista = (await (await fetch(`${testBaseUrl}/api/catalog/tables`)).json()).tables;
+        assert.ok(lista.some(t => t.id === tableId), 'reaparece con su historial');
+    });
+
+    test('La cuenta trae el área de cada platillo (para reimprimir la comanda)', async () => {
+        const det = (await (await fetch(`${testBaseUrl}/api/orders/${orderId}`)).json()).order;
+        assert.equal(det.items[0].station, 'BARRA');
+    });
+
+    test('Escritura segura ante apagones (synchronous = FULL)', async () => {
+        assert.equal((await dbGet('PRAGMA synchronous')).synchronous, 2);
+    });
+});

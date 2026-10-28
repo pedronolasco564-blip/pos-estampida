@@ -16,7 +16,8 @@ const db = new sqlite3.Database(dbPath, (err) => {
         console.log('Conectado a SQLite.'); 
         
         // 🛡️ ACTIVAR MODO WAL (Write-Ahead Logging)
-        db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA temp_store = MEMORY;", (err) => {
+        // synchronous = FULL: cada cobro queda en disco al confirmarse (con NORMAL, un apagón podía perder los últimos movimientos)
+        db.exec("PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA temp_store = MEMORY;", (err) => {
             if (err) {
                 console.error("Error al activar el escudo SQLite WAL:", err.message);
                 rejectReady(err);
@@ -90,6 +91,8 @@ function initDatabase() {
         db.run(`ALTER TABLE order_items ADD COLUMN unit_price REAL`, () => {});
         // Platillos borrados que aparecen en cuentas viejas: se ocultan del menú en vez de borrarse
         db.run(`ALTER TABLE products ADD COLUMN deleted INTEGER DEFAULT 0`, () => {});
+        // Mesas borradas que tienen cuentas en el historial: se ocultan en vez de borrarse (el corte las sigue mostrando)
+        db.run(`ALTER TABLE tables ADD COLUMN deleted INTEGER DEFAULT 0`, () => {});
         // Envíos ya procesados (evita duplicar una orden si el celular reintenta tras perder el Wi-Fi)
         db.run(`CREATE TABLE IF NOT EXISTS request_log (id TEXT PRIMARY KEY, response TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
         db.run(`DELETE FROM request_log WHERE created_at < datetime('now', '-3 days')`);

@@ -103,7 +103,7 @@ function displayProducts(productsToDisplay) {
             btn.innerHTML = `<span style="text-decoration: line-through;">${escapeHtml(product.name)}</span><br><span style="color: #e74c3c; font-weight: bold; font-size: 11px;">🚫 AGOTADO</span>`;
             btn.onclick = () => customAlert('Este platillo está marcado como AGOTADO.', 'warning');
         } else {
-            btn.textContent = `${escapeHtml(product.name)} - $${product.price}`; 
+            btn.textContent = `${product.name} - $${product.price}`;
             btn.onclick = () => addToOrder(product); 
         }
         menuGrid.appendChild(btn); 

@@ -32,6 +32,7 @@ const getTables = async (req, res) => {
                 WHERE status = 'ABIERTA'
                   AND id IN (SELECT MIN(id) FROM orders WHERE status = 'ABIERTA' GROUP BY table_id)
             ) o ON o.table_id = t.id
+            WHERE IFNULL(t.deleted, 0) = 0
         `;
         const tables = await dbAll(query);
         res.json({ tables });
@@ -47,7 +48,10 @@ const createTable = async (req, res) => {
         if (!table_number) {
             return res.status(400).json({ error: 'El número de mesa es requerido.' });
         }
-        await dbRun(`INSERT INTO tables (table_number) VALUES (?)`, [String(table_number).trim()]);
+        const nombre = String(table_number).trim();
+        const oculta = await dbGet(`SELECT id FROM tables WHERE table_number = ? AND IFNULL(deleted, 0) = 1`, [nombre]);
+        if (oculta) await dbRun(`UPDATE tables SET deleted = 0, status = 'LIBRE' WHERE id = ?`, [oculta.id]);
+        else await dbRun(`INSERT INTO tables (table_number) VALUES (?)`, [nombre]);
         
         emitUpdate(req);
 
@@ -71,7 +75,10 @@ const deleteTable = async (req, res) => {
         }
 
         await dbRun(`DELETE FROM order_drafts WHERE table_id = ?`, [req.params.id]);
-        await dbRun(`DELETE FROM tables WHERE id = ?`, [req.params.id]);
+        // Con cuentas en el historial se oculta: borrarla hacía desaparecer esas ventas del corte y del reporte del mes
+        const conHistorial = await dbGet(`SELECT 1 AS x FROM orders WHERE table_id = ? LIMIT 1`, [req.params.id]);
+        if (conHistorial) await dbRun(`UPDATE tables SET deleted = 1 WHERE id = ?`, [req.params.id]);
+        else await dbRun(`DELETE FROM tables WHERE id = ?`, [req.params.id]);
         
         emitUpdate(req);
 
