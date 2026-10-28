@@ -107,16 +107,23 @@ window.fetch = async (input, init = {}) => {
     return res;
 };
 
-function handleAdminExpired() {
+// Cierra la sesión de admin en esta pantalla. Se busca el botón por id (y no por la variable de otro archivo)
+// porque esto puede ocurrir mientras la página aún está cargando.
+function cerrarSesionAdminLocal() {
     isAdminSessionActive = false; setAdminToken(''); localStorage.setItem('isAdminSessionActive', 'false');
-    if (btnMasterAdmin) { btnMasterAdmin.innerHTML = '👑 Panel de Administrador'; btnMasterAdmin.style.backgroundColor = '#1a1a1a'; }
+    const btn = document.getElementById('btn-master-admin');
+    if (btn) { btn.innerHTML = '👑 Panel de Administrador'; btn.style.backgroundColor = '#1a1a1a'; }
+}
+
+function handleAdminExpired() {
+    cerrarSesionAdminLocal();
     setView('welcome-view');
     customAlert('La sesión de administrador expiró. Vuelve a ingresar tu PIN.', 'warning', 'Sesión cerrada');
 }
 
+// La sesión guardada se confirma con el servidor al cargar la pantalla (ver 03-mesero.js): al encender la PC
+// el servidor olvida las sesiones y hay que volver a ingresar el PIN.
 let isAdminSessionActive = localStorage.getItem('isAdminSessionActive') === 'true' && !!getAdminToken();
-// Al recargar, confirma con el servidor que la sesión sigue vigente (un 401 cierra el panel).
-if (isAdminSessionActive) fetch('/api/catalog/session').catch(() => {});
 let currentViewId = localStorage.getItem('currentViewId') || 'welcome-view';
 
 const welcomeView = document.getElementById('welcome-view');

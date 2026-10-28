@@ -228,11 +228,28 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     if (isAdminSessionActive && btnMasterAdmin) { btnMasterAdmin.innerHTML = '👑 Volver al Panel (Desbloqueado)'; btnMasterAdmin.style.backgroundColor = '#d35400'; }
-    setView(currentViewId);
-    if(currentViewId === 'corte-view') loadCorteData();
-    if(currentViewId === 'admin-view') { switchAdminTab(getAdminTab()); loadAdminProducts(); loadCategories(); loadWaiters(); loadModifiers(); }
-    if(currentViewId === 'audit-view') loadFullAuditLogs();
-    if(currentViewId === 'report-view') loadMonthlyReport();
+    const restaurarVista = (vista) => {
+        setView(vista);
+        if(vista === 'corte-view') loadCorteData();
+        if(vista === 'admin-view') { switchAdminTab(getAdminTab()); loadAdminProducts(); loadCategories(); loadWaiters(); loadModifiers(); }
+        if(vista === 'audit-view') loadFullAuditLogs();
+        if(vista === 'report-view') loadMonthlyReport();
+    };
+    // Volver a la última pantalla. Si era del panel, primero se confirma que la sesión sigue vigente:
+    // al encender la PC el servidor ya no la reconoce y se queda en el inicio (el PIN se pide al entrar al panel).
+    const ultimaVista = currentViewId;
+    if (!isAdminSessionActive) {
+        restaurarVista(ADMIN_VIEWS.includes(ultimaVista) ? 'welcome-view' : ultimaVista);
+    } else {
+        setView('welcome-view', false);
+        nativeFetch('/api/catalog/session', { headers: { Authorization: `Bearer ${getAdminToken()}` } })
+            .then(r => r.ok)
+            .catch(() => false)
+            .then(vigente => {
+                if (vigente) restaurarVista(ultimaVista);
+                else { cerrarSesionAdminLocal(); restaurarVista(ADMIN_VIEWS.includes(ultimaVista) ? 'welcome-view' : ultimaVista); }
+            });
+    }
 });
 
 const loginModal = document.getElementById('login-modal'); const loginPinInput = document.getElementById('login-pin-input'); const loginErrorMsg = document.getElementById('login-error-msg'); 
