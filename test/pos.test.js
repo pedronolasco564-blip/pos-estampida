@@ -892,3 +892,36 @@ describe('Cuentas con abonos: nunca salen del corte', () => {
         assert.ok(log && log.details.includes('150'));
     });
 });
+
+describe('Copia de respaldo fuera de la PC', () => {
+    const backup = require('../src/utils/backup');
+    after(() => backup.setExternalDir(null));
+
+    test('Copia el respaldo del día a la carpeta elegida y el panel lo muestra', async () => {
+        const destino = fs.mkdtempSync(path.join(os.tmpdir(), 'pos-usb-'));
+        backup.setExternalDir(destino);
+        await backup.dailyBackup();
+        const copia = path.join(destino, backup.EXTERNAL_SUBDIR, `auto_${backup.localDate()}.db`);
+        assert.ok(fs.existsSync(copia), 'el respaldo está en la carpeta externa');
+        assert.equal(fs.statSync(copia).size, fs.statSync(path.join(backup.BACKUP_DIR, `auto_${backup.localDate()}.db`)).size);
+        const st = await (await fetch(`${testBaseUrl}/api/reports/backup-status`)).json();
+        assert.equal(st.external.ok, true);
+        assert.equal(st.external.last_ok, backup.localDate());
+    });
+
+    test('Si la carpeta no está (USB desconectada) avisa sin detener el respaldo', async () => {
+        backup.setExternalDir(path.join(os.tmpdir(), `no-existe-${Date.now()}`));
+        await backup.dailyBackup();
+        const st = await (await fetch(`${testBaseUrl}/api/reports/backup-status`)).json();
+        assert.equal(st.external.ok, false);
+        assert.match(st.external.error, /no está disponible/);
+        assert.ok(st.last_backup, 'el respaldo local sigue funcionando');
+    });
+
+    test('Sin carpeta elegida, el panel indica que no hay copia externa', async () => {
+        backup.setExternalDir(null);
+        await backup.copyToExternal();
+        const st = await (await fetch(`${testBaseUrl}/api/reports/backup-status`)).json();
+        assert.equal(st.external, null);
+    });
+});

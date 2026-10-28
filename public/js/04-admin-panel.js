@@ -117,8 +117,15 @@ async function loadBackupStatus(targetId) {
         }
         const dias = Math.round((new Date(obtenerFechaLocal()) - new Date(data.last_backup)) / 86400000);
         const cuando = dias <= 0 ? 'hoy' : dias === 1 ? 'ayer' : `hace ${dias} días`;
-        el.innerHTML = `${dias > 2 ? '⚠️' : '✅'} Último respaldo automático: <b>${escapeHtml(data.last_backup)}</b> (${cuando}) · ${data.count} guardados`;
-        el.style.color = dias > 2 ? 'var(--color-warning)' : 'var(--text-secondary)';
+        // Copia fuera de la PC (memoria USB, Google Drive u OneDrive), elegida en el icono del POS junto al reloj
+        const ext = data.external;
+        const externo = !ext
+            ? '⚠️ Sin copia fuera de la PC: elígela en el icono del POS junto al reloj → Copia de respaldo fuera de la PC.'
+            : ext.ok ? `✅ Copia fuera de la PC al día (${escapeHtml(ext.last_ok || '—')}).`
+            : `⚠️ La copia fuera de la PC falló: ${escapeHtml(ext.error || '')}`;
+        const alerta = dias > 2 || !ext || !ext.ok;
+        el.innerHTML = `${dias > 2 ? '⚠️' : '✅'} Último respaldo automático: <b>${escapeHtml(data.last_backup)}</b> (${cuando}) · ${data.count} guardados<br>${externo}`;
+        el.style.color = alerta ? 'var(--color-warning)' : 'var(--text-secondary)';
     } catch (err) { console.error('Respaldo:', err); }
 }
 

@@ -230,6 +230,17 @@ async function buildTrayMenu() {
         }))
         : [{ label: 'No hay impresoras en Windows', enabled: false }];
     const printerItems = printerList('ticketPrinter', current);
+    const extDir = readConfig().externalBackupDir;
+    const externalItems = [
+        { label: extDir ? `Carpeta: ${extDir}` : 'Sin configurar (los respaldos solo están en esta PC)', enabled: false },
+        { type: 'separator' },
+        { label: extDir ? 'Cambiar carpeta…' : 'Elegir carpeta (USB, Google Drive u OneDrive)…', click: chooseExternalBackup },
+        ...(extDir ? [
+            { label: 'Copiar ahora', click: copyExternalNow },
+            { label: 'Abrir carpeta de la copia', click: () => shell.openPath(extDir) },
+            { label: 'Quitar copia externa', click: removeExternalBackup }
+        ] : [])
+    ];
     const reportItems = printerList('reportPrinter', currentReport);
     const updateItems = pendingUpdate
         ? [{ label: `⬆️ Instalar actualización v${pendingUpdate.version} (reinicia el POS)`, click: confirmInstallUpdate }, { type: 'separator' }]
@@ -242,6 +253,7 @@ async function buildTrayMenu() {
         { label: 'Impresora de tickets', submenu: [...printerItems, { type: 'separator' }, { label: 'Actualizar lista', click: buildTrayMenu }] },
         { label: 'Impresora de hojas (carta)', submenu: [...reportItems, { type: 'separator' }, { label: 'Actualizar lista', click: buildTrayMenu }] },
         { label: 'Abrir carpeta de respaldos', click: () => shell.openPath(path.join(app.getPath('userData'), 'respaldos')) },
+        { label: 'Copia de respaldo fuera de la PC', submenu: externalItems },
         { label: 'Abrir carpeta de registros (errores)', click: () => shell.openPath(logsDir || app.getPath('userData')) },
         { type: 'separator' },
         { label: 'Salir (desconecta a los meseros)', click: confirmQuit }
@@ -279,6 +291,8 @@ async function showDiagnostics() {
     try {
         const backups = fs.readdirSync(path.join(dataDir, 'respaldos')).filter(f => f.startsWith('auto_')).sort();
         lines.push(`Último respaldo: ${backups.length ? backups[backups.length - 1] : 'ninguno'}`);
+        const ext = require('../src/utils/backup').readExternalStatus();
+        lines.push(`Copia fuera de la PC: ${!ext || !ext.configured ? 'NO configurada' : ext.ok ? `al día (${ext.last_ok}) en ${ext.dir}` : `FALLA: ${ext.error}`}`);
     } catch (_) { lines.push('Último respaldo: ninguno'); }
     const urls = lanUrls();
     lines.push(`Celulares: ${urls.length ? urls.join('  ') : 'sin red detectada'}`);
@@ -293,6 +307,42 @@ async function showDiagnostics() {
         lines.push(`Impresora de hojas (corte): ${report.name ? `${report.name} (${report.how})` : 'NINGUNA (el corte no saldrá impreso)'}`);
     } catch (e) { lines.push(`Impresoras: error (${e.message})`); }
     dialog.showMessageBox(mainWindow, { type: 'info', title: 'Diagnóstico', buttons: ['Cerrar'], message: 'Diagnóstico del sistema', detail: lines.join('\n') });
+}
+
+// Copia de respaldo fuera de la PC (memoria USB, Google Drive u OneDrive)
+async function chooseExternalBackup() {
+    const { canceled, filePaths } = await dialog.showOpenDialog(mainWindow, {
+        title: 'Carpeta para la copia de respaldo (memoria USB, Google Drive u OneDrive)',
+        properties: ['openDirectory', 'createDirectory']
+    });
+    if (canceled || !filePaths.length) return;
+    const backup = require('../src/utils/backup');
+    writeConfig({ ...readConfig(), externalBackupDir: filePaths[0] });
+    backup.setExternalDir(filePaths[0]);
+    await copyExternalNow();
+    buildTrayMenu();
+}
+
+async function copyExternalNow() {
+    const backup = require('../src/utils/backup');
+    try { await backup.dailyBackup(); } catch (e) { console.error('Respaldo:', e.message); }
+    const st = backup.readExternalStatus() || {};
+    if (st.ok) {
+        dialog.showMessageBox(mainWindow, { type: 'info', title: 'Copia de respaldo', buttons: ['Cerrar'],
+            message: 'Respaldo copiado fuera de la PC.',
+            detail: `Carpeta: ${path.join(st.dir, backup.EXTERNAL_SUBDIR)}\nÚltimo respaldo copiado: ${st.last_ok || '—'}\nCada día se copiará solo el respaldo nuevo (se guardan los últimos 30).` });
+    } else {
+        dialog.showMessageBox(mainWindow, { type: 'warning', title: 'Copia de respaldo', buttons: ['Cerrar'],
+            message: 'No se pudo copiar el respaldo.', detail: st.error || 'Elige una carpeta primero.' });
+    }
+}
+
+function removeExternalBackup() {
+    const cfg = readConfig(); delete cfg.externalBackupDir; writeConfig(cfg);
+    const backup = require('../src/utils/backup');
+    backup.setExternalDir(null);
+    backup.copyToExternal();
+    buildTrayMenu();
 }
 
 async function confirmInstallUpdate() {
@@ -322,7 +372,8 @@ app.whenReady().then(async () => {
         await start(PORT);
         // Respaldo diario (copia consistente que incluye lo pendiente en el archivo -wal)
         // Se revisa cada hora: si la PC se queda encendida varios días, igual hay un respaldo por día
-        const { dailyBackup } = require('../src/utils/backup');
+        const { dailyBackup, setExternalDir } = require('../src/utils/backup');
+        setExternalDir(readConfig().externalBackupDir);
         const backup = () => dailyBackup().catch(e => console.error('Respaldo automático falló:', e.message));
         backup();
         setInterval(backup, 60 * 60 * 1000);

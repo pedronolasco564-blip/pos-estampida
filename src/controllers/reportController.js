@@ -163,7 +163,12 @@ const getBackupStatus = async (req, res) => {
         try {
             files = fs.readdirSync(path.join(DATA_DIR, 'respaldos')).filter(f => /^auto_\d{4}-\d{2}-\d{2}\.db$/.test(f)).sort();
         } catch (_) { /* aún no existe la carpeta */ }
-        res.json({ last_backup: files.length ? files[files.length - 1].slice(5, 15) : null, count: files.length });
+        const ext = require('../utils/backup').readExternalStatus();
+        res.json({
+            last_backup: files.length ? files[files.length - 1].slice(5, 15) : null,
+            count: files.length,
+            external: ext && ext.configured ? { ok: !!ext.ok, last_ok: ext.last_ok || null, dir: ext.dir, error: ext.error || null } : null
+        });
     } catch (err) {
         console.error('[ReportController]', err);
         res.status(500).json({ error: 'Error interno del servidor.' });
