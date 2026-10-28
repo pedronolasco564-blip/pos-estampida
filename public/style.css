@@ -1195,12 +1195,12 @@ header#main-header {
         margin-bottom: 10px;
     }
     .sheet-drag-handle {
-        width: 44px;
-        height: 5px;
-        background: rgba(255, 255, 255, 0.2);
+        width: 52px;
+        height: 6px;
+        background: rgba(255, 255, 255, 0.35);
         border-radius: var(--radius-full);
         margin-bottom: 10px;
-        cursor: pointer;
+        cursor: grab;
     }
     .btn-close-sheet {
         align-self: flex-end;
@@ -1242,6 +1242,35 @@ header#main-header {
     }
     .order-section.sheet-open {
         transform: translateY(0) !important;
+    }
+    /* Mientras se arrastra con el dedo, la comanda sigue al dedo sin animación */
+    .order-section.sheet-open.sheet-dragging {
+        transform: translateY(var(--sheet-drag, 0px)) !important;
+        transition: none !important;
+    }
+    /* Un solo scroll: toda la comanda se desliza como una página (antes había una lista con su propio scroll adentro) */
+    .order-section {
+        display: block !important;
+        overscroll-behavior: contain;
+        -webkit-overflow-scrolling: touch;
+    }
+    .order-section .order-list {
+        overflow: visible;
+        flex: none;
+    }
+    /* La barra de arriba (rayita y "Seguir pidiendo") se queda fija al bajar por la lista */
+    .mobile-sheet-header {
+        position: sticky;
+        top: -16px;
+        z-index: 3;
+        margin: -16px -16px 10px !important;
+        padding: 10px 16px 10px;
+        background: #11141c;
+        border-radius: 24px 24px 0 0;
+        touch-action: none;
+    }
+    body.sheet-lock {
+        overflow: hidden !important;
     }
 
     /* Telón de Fondo Desenfocado (Backdrop) */
