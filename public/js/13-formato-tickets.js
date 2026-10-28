@@ -51,9 +51,9 @@ const TK_CSS = `<style>
 .tk .pu { font-size: 8.5pt; padding-left: 4mm; }
 .tk .tot { font-size: 14pt; font-weight: 900; margin-top: 0.8mm; }
 .tk .tag { border: 0.6mm solid #000; text-align: center; font-weight: 900; font-size: 12pt; padding: 0.6mm 0; margin-bottom: 1.5mm; }
-.tk .cm-head { display: flex; justify-content: space-between; align-items: baseline; gap: 2mm; font-weight: 900; }
-.tk .cm-mesa { font-size: 20pt; line-height: 1.1; }
-.tk .cm-folio { font-size: 14pt; white-space: nowrap; }
+.tk .cm-mesa { font-size: 20pt; line-height: 1.1; font-weight: 900; }
+.tk .cm-sub { font-size: 11pt; }
+.tk .cm-folio { font-size: 14pt; font-weight: 900; white-space: nowrap; }
 .tk .cm-area { font-size: 10pt; font-weight: 900; letter-spacing: 1px; margin-bottom: 0.5mm; }
 .tk .cm-it { display: flex; gap: 2.5mm; font-size: 13pt; font-weight: 800; margin: 0.8mm 0; }
 .tk .cm-it b { min-width: 7mm; text-align: right; }
@@ -127,8 +127,9 @@ function buildComandaHTML(items, folio, mesa, mesero, esAgregado) {
 
     let html = `${TK_CSS}<div class="tk">`;
     if (etiquetas) html += `<div class="tag">${etiquetas}</div>`;
-    html += `<div class="cm-head"><span class="cm-mesa">${llevar ? escapeHtml(mesa) : `MESA ${escapeHtml(mesa)}`}</span><span class="cm-folio">${escapeHtml(folio)}</span></div>`;
-    html += `<div>${escapeHtml(mesero)} · ${hora}</div>`;
+    // El folio va en el segundo renglón (a la derecha quedaba pegado al borde y no se alcanzaba a imprimir)
+    html += `<div class="cm-mesa">${llevar ? escapeHtml(mesa) : `MESA ${escapeHtml(mesa)}`}</div>`;
+    html += `<div class="cm-sub"><span class="cm-folio">${escapeHtml(folio)}</span> · ${escapeHtml(mesero)} · ${hora}</div>`;
 
     const areas = [...new Set(['COCINA', 'BARRA', ...items.map(i => i.station || 'COCINA')])];
     areas.forEach(area => {
@@ -214,26 +215,9 @@ function ticketDocument(content) {
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Ticket</title><style>
         @page { margin: 0; }
         html, body { margin: 0; background: #fff; }
-        body { width: 80mm; box-sizing: border-box; padding: 2mm 4mm 4mm; -webkit-font-smoothing: none; text-rendering: geometricPrecision; }
+        /* La TM-T20II no imprime los últimos milímetros del lado derecho: se deja margen extra ahí */
+        body { width: 80mm; box-sizing: border-box; padding: 1mm 7mm 3mm 4mm; -webkit-font-smoothing: none; text-rendering: geometricPrecision; }
     </style></head><body>${content}</body></html>`;
-}
-
-// Mide el largo real del ticket (en mm) dibujándolo fuera de pantalla con el mismo ancho del papel
-function medirTicketMm(doc) {
-    return new Promise((resolve) => {
-        const frame = document.createElement('iframe');
-        frame.style.cssText = 'position:fixed; left:-10000px; top:0; width:80mm; height:50mm; border:0; visibility:hidden;';
-        document.body.appendChild(frame);
-        const terminar = (mm) => { frame.remove(); resolve(mm); };
-        frame.onload = () => {
-            try {
-                const px = frame.contentDocument.documentElement.scrollHeight;
-                terminar(Math.ceil(px * 25.4 / 96) + 2);
-            } catch (_) { terminar(null); }
-        };
-        frame.srcdoc = doc;
-        setTimeout(() => terminar(null), 3000);
-    });
 }
 
 // ========================================================

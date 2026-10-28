@@ -235,10 +235,9 @@ async function printTicket(contenido) {
 
     const ticketDoc = ticketDocument(ticketContent);
 
-    // 🖨️ APP DE ESCRITORIO: directo a la impresora de tickets, con el largo exacto del contenido (ahorra papel)
+    // 🖨️ APP DE ESCRITORIO: directo a la impresora de tickets elegida, sin diálogos
     if (window.posDesktop) {
-        const heightMm = await medirTicketMm(ticketDoc);
-        const result = await window.posDesktop.printTicket(ticketDoc, { heightMm });
+        const result = await window.posDesktop.printTicket(ticketDoc);
         if (!result || !result.ok) await customAlert(`No se pudo imprimir el ticket: ${escapeHtml(result ? result.reason : 'sin respuesta')}. Revisa la impresora en el icono del POS junto al reloj → Impresora de tickets.`, 'error', 'Impresión');
         return result || { ok: false, reason: 'sin respuesta' };
     }

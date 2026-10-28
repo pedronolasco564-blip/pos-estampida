@@ -149,15 +149,13 @@ async function printHtml(html, options) {
     }
 }
 
-// Ticket térmico: el papel mide 80 mm y el largo es el del contenido (la página lo mide antes de enviarlo),
-// así la impresora corta justo al terminar y no avanza papel en blanco.
-ipcMain.handle('print-ticket', async (event, html, opts = {}) => {
+// Ticket térmico con el papel que tiene configurado la impresora. (Se probó fijar el largo al del contenido,
+// pero el controlador de la Epson TM-T20II lo ignora y deja un tramo en blanco ANTES del ticket.)
+ipcMain.handle('print-ticket', async (event, html) => {
     if (typeof html !== 'string' || html.length > 500000) return { ok: false, reason: 'Ticket inválido' };
     const printer = await resolveTicketPrinter();
     if (!printer.name) return { ok: false, reason: 'No hay impresoras instaladas en Windows' };
-    const heightMm = Number(opts.heightMm);
-    const pageSize = heightMm >= 20 && heightMm <= 3000 ? { width: 80000, height: Math.ceil(heightMm * 1000) } : undefined;
-    return printHtml(html, { deviceName: printer.name, margins: { marginType: 'none' }, ...(pageSize ? { pageSize } : {}) });
+    return printHtml(html, { deviceName: printer.name, margins: { marginType: 'none' } });
 });
 
 // Corte y reportes en hoja carta, en la impresora de hojas (nunca en la de tickets).
