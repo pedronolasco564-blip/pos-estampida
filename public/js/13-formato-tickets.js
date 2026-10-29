@@ -273,7 +273,8 @@ function buildCorteCartaHTML({ fecha, sum, orders, fondo, conteo, mesasAbiertas 
         || '<tr><td colspan="3" class="vacio">Sin gastos</td></tr>';
     const tickets = [...orders].sort((a, b) => String(a.closed_at).localeCompare(String(b.closed_at))).map(o => {
         const ef = Number(o.cash_amount) || 0, tj = Number(o.card_amount) || 0;
-        const metodo = ef > 0 && tj > 0 ? 'Mixto' : tkMetodo(o.payment_method);
+        // Pago mixto: cuánto entró por cada método (para cuadrar la caja sin abrir cada ticket)
+        const metodo = ef > 0 && tj > 0 ? `Mixto (Ef. $${fmtMoney(ef)} / Tj. $${fmtMoney(tj)})` : tkMetodo(o.payment_method);
         return `<tr><td>${escapeHtml(o.folio || '#' + o.id)}</td><td>${escapeHtml((o.closed_at || '').slice(11, 16))}</td><td>${tkMesa(o.table_number)}</td><td>${escapeHtml(o.waiter_name || '')}</td><td>${metodo}</td><td class="r">${o.tip_amount > 0 ? $(o.tip_amount) : ''}</td><td class="r">${$(o.total)}</td></tr>`;
     }).join('') || '<tr><td colspan="7" class="vacio">Sin tickets cobrados</td></tr>';
 

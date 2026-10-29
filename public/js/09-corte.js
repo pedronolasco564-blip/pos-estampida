@@ -98,7 +98,7 @@ async function loadCorteData() {
                     <td><b>${escapeHtml(o.folio || '#' + o.id)}</b></td>
                     <td>Mesa ${o.table_number}</td>
                     <td>${o.waiter_name}</td>
-                    <td>${o.payment_method}</td>
+                    <td>${escapeHtml(o.payment_method || '')}${(Number(o.cash_amount) > 0 && Number(o.card_amount) > 0) ? `<br><small style="color: var(--text-secondary); font-weight: 600; white-space: nowrap;">Efectivo $${fmtMoney(o.cash_amount)} · Tarjeta $${fmtMoney(o.card_amount)}</small>` : ''}</td>
                     <td><strong>$${o.total.toFixed(2)}</strong></td>
                     <td><span style="color: #27ae60; font-weight: bold;">$${(o.tip_amount || 0).toFixed(2)}</span></td>
                     <td style="text-align: center;">${facturaHtml}</td>
