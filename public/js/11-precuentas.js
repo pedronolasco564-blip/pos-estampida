@@ -25,60 +25,83 @@ function showDividedPreCheck(personas, wantsInvoice) {
     document.getElementById('ticket-modal').style.display = 'flex';
 }
 
+// ========================================================
+// CUENTA POR CONSUMO: cada persona elige sus platillos (con cantidades) y se imprime su cuenta parcial.
+// Cada grupo se guarda en la cuenta, para que al cobrar aparezcan los botones "Persona 1, 2..." en cualquier dispositivo.
+// ========================================================
+let consumoPendientes = [];
+let consumoSeleccion = {};
+let consumoGrupos = [];
+
+function guardarGruposConsumo() {
+    if (!currentOrderId) return;
+    fetch(`/api/orders/${currentOrderId}/split-groups`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ groups: consumoGrupos })
+    }).catch(() => {});
+}
+
+window.iniciarCuentaPorConsumo = function() {
+    consumoPendientes = savedOrderItems.filter(i => i.paid !== 1).map(i => ({ ...i }));
+    consumoSeleccion = {};
+    consumoGrupos = [];
+    guardarGruposConsumo();
+    openPrintConsumoModal();
+};
+
+function actualizarTotalConsumo() {
+    document.getElementById('print-consumo-total').textContent = `$${fmtMoney(totalSeleccion(consumoPendientes, consumoSeleccion))}`;
+}
+
 window.openPrintConsumoModal = function() {
-    if (unprintedConsumoItems.length === 0) {
-        customAlert('Todos los platillos han sido impresos.', 'success');
+    const disponibles = consumoPendientes.filter(i => i.quantity > 0);
+    if (disponibles.length === 0) {
+        customAlert('Todos los platillos ya están en la cuenta de alguien.', 'success');
         document.getElementById('print-consumo-modal').style.display = 'none';
         return;
     }
-    const container = document.getElementById('print-consumo-items');
-    container.innerHTML = '';
-    unprintedConsumoItems.forEach((item, idx) => {
-        let itemFullPrice = item.price + (item.extra_price || 0);
-        const label = document.createElement('label');
-        label.style.display = 'block'; label.style.fontSize = '14px'; label.style.marginBottom = '8px'; label.style.color = '#fff';
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox'; checkbox.value = idx;
-        checkbox.style.marginRight = '8px'; checkbox.style.transform = 'scale(1.2)';
-        label.appendChild(checkbox);
-        label.appendChild(document.createTextNode(`1x ${item.name} - $${itemFullPrice.toFixed(2)}`));
-        container.appendChild(label);
-    });
+    document.getElementById('print-consumo-title').textContent = `Cuenta de la persona ${consumoGrupos.length + 1}`;
+    renderSelectorConsumo(document.getElementById('print-consumo-items'), disponibles, consumoSeleccion, actualizarTotalConsumo);
+    actualizarTotalConsumo();
     document.getElementById('print-consumo-modal').style.display = 'flex';
-}
+};
+
+// Para la última persona: elige todo lo que aún no está en la cuenta de nadie
+window.seleccionarTodoConsumo = function() {
+    consumoSeleccion = {};
+    consumoPendientes.forEach(i => { if (i.quantity > 0) consumoSeleccion[i.id] = i.quantity; });
+    renderSelectorConsumo(document.getElementById('print-consumo-items'), consumoPendientes.filter(i => i.quantity > 0), consumoSeleccion, actualizarTotalConsumo);
+    actualizarTotalConsumo();
+};
 
 window.closePrintConsumo = function() {
     document.getElementById('print-consumo-modal').style.display = 'none';
-}
+};
 
 window.printSelectedConsumo = function() {
-    const checkboxes = document.querySelectorAll('#print-consumo-items input[type="checkbox"]:checked');
-    if (checkboxes.length === 0) return;
+    const ids = Object.keys(consumoSeleccion).map(Number);
+    if (ids.length === 0) { customAlert('Elige al menos un platillo de esta persona.', 'warning'); return; }
 
-    let selectedItems = [];
-    let indexesToRemove = [];
-    checkboxes.forEach(cb => {
-        let idx = parseInt(cb.value);
-        selectedItems.push(unprintedConsumoItems[idx]);
-        indexesToRemove.push(idx);
+    const n = consumoGrupos.length + 1;
+    const items = [];
+    const grupo = { name: `Persona ${n}`, items: [] };
+    ids.forEach(id => {
+        const it = consumoPendientes.find(x => x.id === id);
+        const qty = consumoSeleccion[id];
+        if (!it || !qty) return;
+        items.push({ ...it, quantity: qty });
+        grupo.items.push({ id, qty });
+        it.quantity -= qty;
     });
+    consumoGrupos.push(grupo);
+    consumoSeleccion = {};
+    guardarGruposConsumo();
 
-    indexesToRemove.sort((a,b) => b - a).forEach(idx => {
-        unprintedConsumoItems.splice(idx, 1);
-    });
-
-    let wantsInvoice = false;
-    if (tableInstructions[currentTableId] && tableInstructions[currentTableId].invoice) {
-        wantsInvoice = true;
-    }
-
-    let html = generatePreCheckHTML(selectedItems, 'CUENTA PARCIAL', 1, wantsInvoice, 0);
-    document.getElementById('ticket-content').innerHTML = html;
+    const wantsInvoice = !!(tableInstructions[currentTableId] && tableInstructions[currentTableId].invoice);
+    document.getElementById('ticket-content').innerHTML = generatePreCheckHTML(items, `CUENTA PARCIAL · PERSONA ${n}`, 1, wantsInvoice, 0);
     isReprinting = true;
-    
     document.getElementById('ticket-modal').style.display = 'flex';
     openPrintConsumoModal();
-}
+};
 
 document.addEventListener('DOMContentLoaded', () => {
     const searchInput = document.getElementById('search-product');

@@ -3,14 +3,116 @@
 // ========================================================
 // SISTEMA INTELIGENTE DE COBRO EN TIEMPO REAL
 // ========================================================
-function getMontoEsperado() {
-    if (selectedItemsToPay.length > 0) {
-        let totalParcial = 0;
-        document.querySelectorAll('#items-to-pay-container input[type="checkbox"]:checked').forEach(cb => {
-            totalParcial += parseFloat(cb.dataset.price);
-        });
-        return totalParcial;
+// ========================================================
+// SELECTOR POR CONSUMO: una fila por platillo con cantidades (−/+/Todo) en lugar de una casilla por unidad.
+// Lo usan el cobro (caja) y la cuenta por consumo (mesero). seleccion = { [order_item id]: cantidad }
+// ========================================================
+const precioUnidad = (it) => (Number(it.price) || 0) + (Number(it.extra_price) || 0);
+const totalSeleccion = (items, sel) => Math.round(items.reduce((acc, it) => acc + (sel[it.id] || 0) * precioUnidad(it) * 100, 0)) / 100;
+
+function renderSelectorConsumo(container, items, seleccion, onChange, titulo = '') {
+    if (!items.length) { container.innerHTML = '<p class="pay-items-title">No hay platillos pendientes.</p>'; return; }
+    container.innerHTML = (titulo ? `<div class="pay-items-title">${titulo}</div>` : '') + items.map(it => {
+        const n = seleccion[it.id] || 0;
+        const nota = it.notes ? ` · ${escapeHtml(it.notes)}` : '';
+        return `<div class="pc-row ${n ? 'on' : ''}" data-id="${it.id}">
+            <div class="pc-name">${escapeHtml(it.name)}<small>${it.quantity} × $${fmtMoney(precioUnidad(it))}${nota}</small></div>
+            <div class="pc-ctrl"><button type="button" data-d="-1">−</button><b>${n}</b><button type="button" data-d="1">+</button><button type="button" class="pc-all" data-d="all">Todo</button></div>
+            <div class="pc-sub">$${fmtMoney(precioUnidad(it) * n)}</div>
+        </div>`;
+    }).join('');
+    container.onclick = (e) => {
+        const b = e.target.closest('button[data-d]');
+        if (!b) return;
+        const it = items.find(x => x.id === Number(b.closest('.pc-row').dataset.id));
+        if (!it) return;
+        let n = seleccion[it.id] || 0;
+        n = b.dataset.d === 'all' ? (n === it.quantity ? 0 : it.quantity) : Math.max(0, Math.min(it.quantity, n + Number(b.dataset.d)));
+        if (n) seleccion[it.id] = n; else delete seleccion[it.id];
+        renderSelectorConsumo(container, items, seleccion, onChange, titulo);
+        onChange();
+    };
+}
+
+// ========================================================
+// COBRO: modo normal (toda la cuenta) o por consumo (con botones "Persona 1, 2..." si el mesero ya separó la cuenta)
+// ========================================================
+let payModoConsumo = false;
+let paySeleccion = {};
+let payGroups = [];
+
+const pendientesPago = () => savedOrderItems.filter(i => i.paid !== 1);
+function parseGrupos(raw) { try { const g = JSON.parse(raw || '[]'); return Array.isArray(g) ? g : []; } catch (_) { return []; } }
+
+// Lo que aún falta pagar de cada persona (ya se descuenta lo cobrado)
+function seleccionDeGrupo(g, pend) {
+    const sel = {};
+    if (g.paid) return sel;
+    (g.items || []).forEach(({ id, qty }) => {
+        const it = pend.find(x => x.id === id);
+        if (!it) return;
+        const n = Math.min(qty, it.quantity - (sel[id] || 0));
+        if (n > 0) sel[id] = (sel[id] || 0) + n;
+    });
+    return sel;
+}
+
+function renderPayGroups() {
+    const el = document.getElementById('pay-groups');
+    const pend = pendientesPago();
+    if (!payModoConsumo || !payGroups.length) { el.innerHTML = ''; return; }
+    const actual = JSON.stringify(paySeleccion);
+    el.innerHTML = payGroups.map((g, i) => {
+        const sel = seleccionDeGrupo(g, pend);
+        const monto = totalSeleccion(pend, sel);
+        const on = monto > 0 && JSON.stringify(sel) === actual;
+        return `<button type="button" class="pay-group-btn ${on ? 'on' : ''}" data-g="${i}" ${monto > 0 ? '' : 'disabled'}>${escapeHtml(g.name)} · ${monto > 0 ? `$${fmtMoney(monto)}` : '✓ pagado'}</button>`;
+    }).join('');
+    el.onclick = (e) => {
+        const b = e.target.closest('button[data-g]');
+        if (!b) return;
+        const sel = seleccionDeGrupo(payGroups[Number(b.dataset.g)], pendientesPago());
+        paySeleccion = JSON.stringify(sel) === JSON.stringify(paySeleccion) ? {} : sel;
+        renderPayItems();
+        syncSeleccionPago();
+    };
+}
+
+function renderPayItems() {
+    const cont = document.getElementById('items-to-pay-container');
+    const pend = pendientesPago();
+    document.getElementById('btn-split-items').classList.toggle('on', payModoConsumo);
+    if (!payModoConsumo) {
+        // Vista de la cuenta (solo lectura; en la PC aparece a la izquierda)
+        cont.classList.add('pay-items-readonly');
+        cont.onclick = null;
+        cont.innerHTML = pend.length ? '<div class="pay-items-title">Cuenta</div>' + pend.map(it => `<div class="pc-row readonly">
+            <div class="pc-name">${it.quantity}× ${escapeHtml(it.name)}${it.notes ? `<small>${escapeHtml(it.notes)}</small>` : ''}</div>
+            <div class="pc-sub">$${fmtMoney(precioUnidad(it) * it.quantity)}</div></div>`).join('') : '';
+    } else {
+        cont.classList.remove('pay-items-readonly');
+        renderSelectorConsumo(cont, pend, paySeleccion, syncSeleccionPago, 'Elige lo que paga esta persona');
     }
+    renderPayGroups();
+}
+
+function syncSeleccionPago() {
+    selectedItemsToPay = Object.entries(paySeleccion).map(([id, qty]) => ({ id: Number(id), qty }));
+    inputAmountPaid.value = getMontoEsperado().toFixed(2);
+    calcularCambioEnVivo();
+    renderPayGroups();
+}
+
+// Índice de la persona cuyo grupo coincide con lo elegido (se manda al cobrar para marcarla como pagada)
+function grupoSeleccionado() {
+    if (!payModoConsumo || !selectedItemsToPay.length) return null;
+    const actual = JSON.stringify(paySeleccion), pend = pendientesPago();
+    const i = payGroups.findIndex(g => JSON.stringify(seleccionDeGrupo(g, pend)) === actual);
+    return i >= 0 ? i : null;
+}
+
+function getMontoEsperado() {
+    if (payModoConsumo && selectedItemsToPay.length > 0) return totalSeleccion(pendientesPago(), paySeleccion);
     return currentRemainingBalance;
 }
 
@@ -18,6 +120,10 @@ function calcularCambioEnVivo() {
     const montoIngresado = parseFloat(inputAmountPaid.value) || 0;
     const esperado = getMontoEsperado();
     const displayTexto = document.getElementById('change-display-text');
+    // El total del pie: toda la cuenta, o solo lo elegido (por persona o por consumo)
+    const parcial = payModoConsumo && selectedItemsToPay.length > 0;
+    document.getElementById('pay-cobrar-label').textContent = parcial ? 'ESTA PARTE:' : 'POR COBRAR:';
+    document.getElementById('pay-remaining-display').textContent = esperado.toFixed(2);
     const btnConfirmar = document.getElementById('btn-confirm-pay');
 
     // 💡 REPARACIÓN MATEMÁTICA: Redondeo estricto a 2 decimales
@@ -69,30 +175,54 @@ window.clearQuickCash = function() {
     calcularCambioEnVivo();
 };
 
-btnPayOrder.onclick = () => {
-    const invoiceCheckbox = document.getElementById('require-invoice'); 
+btnPayOrder.onclick = async () => {
+    const invoiceCheckbox = document.getElementById('require-invoice');
     if(invoiceCheckbox) invoiceCheckbox.checked = false;
-    
+
     document.getElementById('pay-table-name').textContent = currentTableSpan.textContent;
-    
-    const totalToPay = parseFloat(orderTotalSpan.textContent); 
-    currentRemainingBalance = currentRemainingBalance > 0 ? currentRemainingBalance : totalToPay; 
-    
-    document.getElementById('pay-total-display').textContent = totalToPay.toFixed(2); 
-    document.getElementById('pay-remaining-display').textContent = currentRemainingBalance.toFixed(2); 
-    
-    inputAmountPaid.value = currentRemainingBalance.toFixed(2); 
-    document.getElementById('tip-amount').value = ''; 
-    
+
+    // Datos frescos del servidor: lo ya pagado, el saldo real y la división por persona que haya guardado el mesero
+    payGroups = [];
+    try {
+        const r = await fetch(`/api/orders/${currentOrderId}`);
+        if (r.ok) {
+            const o = (await r.json()).order;
+            if (o.status !== 'ABIERTA') {
+                await customAlert('Esta cuenta ya fue cobrada desde otro dispositivo.', 'warning', 'Cuenta cerrada');
+                clearTableSelection(); loadTables();
+                return;
+            }
+            savedOrderItems = o.items || savedOrderItems;
+            currentRemainingBalance = o.remaining_balance !== null && o.remaining_balance !== undefined ? o.remaining_balance : o.total;
+            payGroups = parseGrupos(o.split_groups);
+        }
+    } catch (_) { /* sin red: se usa lo que ya tiene la pantalla */ }
+
+    const totalToPay = parseFloat(orderTotalSpan.textContent);
+    currentRemainingBalance = currentRemainingBalance > 0 ? currentRemainingBalance : totalToPay;
+    document.getElementById('pay-total-display').textContent = totalToPay.toFixed(2);
+
+    // Si el mesero ya separó la cuenta por persona, se abre directo en modo por consumo con sus botones
+    paySeleccion = {}; selectedItemsToPay = [];
+    const pend = pendientesPago();
+    payModoConsumo = payGroups.some(g => totalSeleccion(pend, seleccionDeGrupo(g, pend)) > 0);
+    document.getElementById('items-to-pay-container').style.display = '';
+    renderPayItems();
+
+    inputAmountPaid.value = currentRemainingBalance.toFixed(2);
+    document.getElementById('tip-amount').value = '';
+
     calcularCambioEnVivo();
     paymentPanel.style.display = 'flex'; // Ahora se abre como Modal Gigante
-    setTimeout(() => { inputAmountPaid.focus(); inputAmountPaid.select(); }, 100);
+    const body = paymentPanel.querySelector('.pay-body'); if (body) body.scrollTop = 0;
+    // En la PC el cursor queda listo en "Recibí en caja"; en celular no (abriría el teclado encima de todo)
+    if (window.matchMedia('(pointer: fine)').matches) setTimeout(() => { inputAmountPaid.focus(); inputAmountPaid.select(); }, 100);
 };
 
-document.getElementById('btn-cancel-pay').onclick = () => { 
-    paymentPanel.style.display = 'none'; 
-    document.getElementById('items-to-pay-container').style.display = 'none'; 
-    selectedItemsToPay = []; 
+document.getElementById('btn-cancel-pay').onclick = () => {
+    paymentPanel.style.display = 'none';
+    paySeleccion = {}; payModoConsumo = false;
+    selectedItemsToPay = [];
 };
 
 document.getElementById('btn-split-equal').onclick = async () => { 
@@ -107,37 +237,10 @@ document.getElementById('btn-split-equal').onclick = async () => {
 };
 
 document.getElementById('btn-split-items').onclick = () => {
-    const container = document.getElementById('items-to-pay-container');
-    if (container.style.display === 'block') { 
-        container.style.display = 'none'; 
-        selectedItemsToPay = []; 
-        inputAmountPaid.value = currentRemainingBalance.toFixed(2);
-        calcularCambioEnVivo();
-    } else {
-        container.style.display = 'block'; 
-        container.innerHTML = '<p style="font-size: 13px; margin-top: 0; font-weight: bold; color:#fff;">Selecciona consumos:</p>'; 
-        let unpaidItems = savedOrderItems.filter(item => item.paid === 0); 
-        if (unpaidItems.length === 0) container.innerHTML += '<p style="font-size: 12px; color: #e74c3c;">Todos pagados.</p>';
-        unpaidItems.forEach(item => { 
-            for (let i = 0; i < item.quantity; i++) { 
-                const label = document.createElement('label'); label.style.display = 'block'; label.style.fontSize = '14px'; label.style.marginBottom = '8px'; 
-                const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.value = item.id; 
-                const itemFullPrice = item.price + (item.extra_price || 0); checkbox.dataset.price = itemFullPrice; checkbox.style.marginRight = '8px'; checkbox.style.transform = 'scale(1.2)'; 
-                checkbox.onchange = () => { 
-                    const checkboxes = document.querySelectorAll('#items-to-pay-container input[type="checkbox"]:checked'); 
-                    let currentTotal = 0; let itemCounts = {}; 
-                    checkboxes.forEach(cb => { 
-                        currentTotal += parseFloat(cb.dataset.price); 
-                        let id = parseInt(cb.value); itemCounts[id] = (itemCounts[id] || 0) + 1; 
-                    }); 
-                    selectedItemsToPay = Object.keys(itemCounts).map(id => ({ id: parseInt(id), qty: itemCounts[id] })); 
-                    inputAmountPaid.value = selectedItemsToPay.length > 0 ? currentTotal.toFixed(2) : currentRemainingBalance.toFixed(2); 
-                    calcularCambioEnVivo(); // <-- Actualiza el cambio mágicamente al palomear
-                }; 
-                label.appendChild(checkbox); label.appendChild(document.createTextNode(`1x ${item.name} - $${itemFullPrice.toFixed(2)}`)); container.appendChild(label); 
-            } 
-        });
-    }
+    payModoConsumo = !payModoConsumo;
+    paySeleccion = {};
+    renderPayItems();
+    syncSeleccionPago();
 };
 
 document.getElementById('btn-confirm-pay').onclick = async () => {
@@ -158,7 +261,7 @@ document.getElementById('btn-confirm-pay').onclick = async () => {
     btnCobrar.textContent = '⏳ COBRANDO...';
 
     try { 
-        const response = await fetch(`/api/orders/${currentOrderId}/pay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payment_method: method, amount_paid: amountPaid, items_to_pay: selectedItemsToPay, tip_amount: tipAmount, needs_invoice: requireInvoice }) });
+        const response = await fetch(`/api/orders/${currentOrderId}/pay`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ payment_method: method, amount_paid: amountPaid, items_to_pay: selectedItemsToPay, tip_amount: tipAmount, needs_invoice: requireInvoice, split_group: grupoSeleccionado() })});
         const result = await response.json(); 
         
         // 🛡️ DEVOLVER EL BOTÓN A LA NORMALIDAD DESPUÉS DE LA RESPUESTA

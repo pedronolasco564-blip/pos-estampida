@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Asadero La Estampida - POS</title>
-    <link rel="stylesheet" href="style.css?v=10">
+    <link rel="stylesheet" href="style.css?v=12">
     <link rel="icon" type="image/jpeg" href="logo.jpg">
     <style>
         .arqueo-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; border-bottom: 1px solid var(--border-subtle); padding-bottom: 4px; }
@@ -636,26 +636,26 @@
     <!-- PANEL DE COBRO GIGANTE MODERNO -->
     <div id="payment-panel" class="modal-overlay" style="display: none; z-index: 30000;">
         <div class="payment-modal-card">
-            
-            <h2 style="margin: 0 0 4px; color: var(--color-warning); text-align: center; font-size: 22px; font-weight: 800; border: none; padding: 0;">💰 COBRO DE CUENTA</h2>
-            <p style="text-align: center; color: var(--text-secondary); font-size: 13px; margin: 0 0 16px;">Mesa: <span id="pay-table-name" style="color: #fff; font-weight: 800;"></span></p>
-            
-            <div style="display: flex; gap: 8px; margin-bottom: 14px;">
-                <button id="btn-split-equal" style="flex: 1; background: var(--surface-subtle); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); padding: 9px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 700; cursor: pointer;">➗ Partes Iguales</button>
-                <button id="btn-split-items" style="flex: 1; background: var(--surface-subtle); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); padding: 9px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 700; cursor: pointer;">📋 Por Consumo</button>
-            </div>
-            
-            <div id="items-to-pay-container" style="display: none; background: var(--bg-canvas); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); max-height: 140px; overflow-y: auto; margin-bottom: 14px;"></div>
-            
-            <div class="pay-remaining-box">
-                <span>POR COBRAR:</span> 
-                <span>$<span id="pay-remaining-display">0.00</span></span>
-                <span id="pay-total-display" style="display: none;"></span>
+            <!-- Encabezado fijo -->
+            <div class="pay-head">
+                <h2>💰 COBRO DE CUENTA</h2>
+                <p>Mesa: <span id="pay-table-name"></span></p>
             </div>
 
-            <label style="display: block; margin-bottom: 4px; font-size: 13px; font-weight: 800; color: #fbbf24; text-transform: uppercase;">Recibí en Caja:</label>
-            <input type="number" id="amount-paid" placeholder="0.00">
-            
+            <!-- Centro: se desliza con la rueda del mouse o el dedo si no cabe en la pantalla -->
+            <div class="pay-body">
+                <div class="pay-col pay-col-items">
+                    <div class="pay-split-btns">
+                        <button id="btn-split-equal" style="flex: 1; background: var(--surface-subtle); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.3); padding: 9px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 700; cursor: pointer;">➗ Partes Iguales</button>
+                        <button id="btn-split-items" style="flex: 1; background: var(--surface-subtle); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.3); padding: 9px; border-radius: var(--radius-sm); font-size: 12px; font-weight: 700; cursor: pointer;">📋 Por Consumo</button>
+                    </div>
+                    <div id="pay-groups" class="pay-groups"></div>
+                    <div id="items-to-pay-container" class="pay-items"></div>
+                </div>
+                <div class="pay-col pay-col-money">
+                    <label class="pay-label">Recibí en Caja:</label>
+                    <input type="number" id="amount-paid" placeholder="0.00">
+
             <!-- BILLETES RÁPIDOS (QUICK CASH) -->
             <div class="quick-cash-grid">
                 <button type="button" class="btn-quick-cash btn-quick-cash-exact" onclick="setQuickCash('exact')">💵 Exacto</button>
@@ -668,11 +668,6 @@
                 <button type="button" class="btn-quick-cash btn-quick-cash-clear" onclick="clearQuickCash()">⌫ Borrar</button>
             </div>
 
-            <!-- EL LETRERO MÁGICO DE CAMBIO -->
-            <div style="text-align: center; margin-bottom: 14px; padding: 10px; border-radius: var(--radius-sm); background: var(--bg-canvas); border: 1px solid var(--border-subtle);">
-                <span id="change-display-text">CAMBIO: $0.00</span>
-            </div>
-            
             <div style="display: flex; gap: 10px; margin-bottom: 14px;">
                 <div style="flex: 1;">
                     <label style="display: block; margin-bottom: 4px; font-size: 11px; font-weight: 700; color: var(--text-secondary); text-transform: uppercase;">Método:</label>
@@ -695,22 +690,38 @@
 
             <button id="btn-apply-discount" style="width: 100%; background: var(--surface-subtle); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.4); padding: 11px; border-radius: var(--radius-md); margin-bottom: 14px; font-weight: 700; font-size: 13px; cursor: pointer; transition: all var(--transition-fast);">🎁 Aplicar Descuento (Requiere PIN)</button>
 
-            <div style="display: flex; gap: 10px;">
-                <button id="btn-cancel-pay" class="btn-secondary" style="flex: 1; padding: 14px; font-size: 14px;">Cancelar</button>
-                <button id="btn-confirm-pay" class="btn-success" style="flex: 2; padding: 14px; font-size: 16px;">CONFIRMAR PAGO</button>
+                </div>
+            </div>
+
+            <!-- Pie fijo: el total, el cambio y CONFIRMAR PAGO siempre están a la vista -->
+            <div class="pay-foot">
+                <div class="pay-foot-totals">
+                    <div class="pay-remaining-box">
+                        <span id="pay-cobrar-label">POR COBRAR:</span>
+                        <span>$<span id="pay-remaining-display">0.00</span></span>
+                    </div>
+                    <div class="pay-change"><span id="change-display-text">CAMBIO: $0.00</span></div>
+                </div>
+                <span id="pay-total-display" style="display: none;"></span>
+                <div style="display: flex; gap: 10px;">
+                    <button id="btn-cancel-pay" class="btn-secondary" style="flex: 1; padding: 14px; font-size: 14px;">Cancelar</button>
+                    <button id="btn-confirm-pay" class="btn-success" style="flex: 2; padding: 14px; font-size: 16px;">CONFIRMAR PAGO</button>
+                </div>
             </div>
         </div>
     </div>
 
     <!-- MODAL: SUB-TICKETS POR CONSUMO -->
     <div id="print-consumo-modal" class="modal-overlay" style="display: none; z-index: 21000;">
-        <div style="padding: 24px; width: 90%; max-width: 360px;">
-            <h3 style="margin-top: 0; color: #c084fc; font-size: 16px; font-weight: 800; text-align: center;">Armar Sub-Ticket</h3>
-            <p style="font-size: 12px; color: var(--text-secondary); text-align: center; margin-bottom: 14px;">Seleccione los platillos para el ticket de esta persona.</p>
-            <div id="print-consumo-items" style="background: var(--bg-canvas); padding: 10px; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); max-height: 200px; overflow-y: auto; margin-bottom: 14px; text-align: left;"></div>
+        <div class="consumo-card">
+            <h3 id="print-consumo-title">Cuenta de la persona 1</h3>
+            <p class="consumo-hint">Elige lo que consumió esta persona. Al imprimir su cuenta, sigue con la siguiente.</p>
+            <button type="button" class="consumo-todo" onclick="seleccionarTodoConsumo()">Todo lo que falta</button>
+            <div id="print-consumo-items" class="pay-items consumo-items"></div>
+            <div class="consumo-total">Total de esta persona: <b id="print-consumo-total">$0.00</b></div>
             <div style="display: flex; gap: 10px;">
-                <button onclick="closePrintConsumo()" class="btn-secondary" style="flex: 1; padding: 10px;">Terminar</button>
-                <button onclick="printSelectedConsumo()" class="btn-primary" style="background: var(--color-success); flex: 1; padding: 10px;">🖨️ Imprimir</button>
+                <button onclick="closePrintConsumo()" class="btn-secondary" style="flex: 1; padding: 12px;">Terminar</button>
+                <button onclick="printSelectedConsumo()" class="btn-primary" style="background: var(--color-success); flex: 1; padding: 12px;">🖨️ Imprimir su cuenta</button>
             </div>
         </div>
     </div>

@@ -85,7 +85,6 @@ socket.on('receive-instruction', (data) => {
     if (currentTableId === data.tableId) updateOrderUI();
 });
 
-let unprintedConsumoItems = [];
 
 const btnPrintAccount = document.getElementById('btn-print-account');
 if (btnPrintAccount) {
@@ -115,13 +114,7 @@ window.executePrint = async function(type) {
     } 
     else if (type === 'consumo') {
         instruction = 'Dividido por consumo';
-        unprintedConsumoItems = [];
-        savedOrderItems.forEach(item => {
-            for(let i = 0; i < item.quantity; i++) {
-                unprintedConsumoItems.push({...item, quantity: 1});
-            }
-        });
-        openPrintConsumoModal();
+        iniciarCuentaPorConsumo();
     }
 
     socket.emit('payment-instruction', { tableId: currentTableId, instruction: instruction, invoice: wantsInvoice });

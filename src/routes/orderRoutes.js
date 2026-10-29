@@ -21,5 +21,6 @@ router.post('/:id/discount', pinAttemptLimiter, verifyPinMiddleware, orderContro
 router.post('/:id/reopen', pinAttemptLimiter, verifyPinMiddleware, orderController.reopenOrder);
 router.put('/:id/invoice-status', orderController.toggleInvoiceStatus);
 router.put('/:id/pax', orderController.updatePax);
+router.put('/:id/split-groups', orderController.saveSplitGroups);
 
 module.exports = router;

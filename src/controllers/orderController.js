@@ -287,7 +287,7 @@ const addItemsToOrder = async (req, res) => {
 
 const payOrder = async (req, res) => {
     const { id } = req.params;
-    const { payment_method, amount_paid, items_to_pay, tip_amount = 0, needs_invoice = false } = req.body;
+    const { payment_method, amount_paid, items_to_pay, tip_amount = 0, needs_invoice = false, split_group } = req.body;
     const invoiceFlag = needs_invoice ? 1 : 0;
     const numericPaid = round2(amount_paid);
     const numericTip = round2(tip_amount);
@@ -325,6 +325,17 @@ const payOrder = async (req, res) => {
                         }
                     }
                 }
+            }
+
+            // Cuenta por consumo: la persona cobrada queda marcada como pagada (su botón pasa a "✓ pagado")
+            if (Number.isInteger(split_group) && order.split_groups) {
+                try {
+                    const grupos = JSON.parse(order.split_groups);
+                    if (grupos[split_group]) {
+                        grupos[split_group].paid = true;
+                        await dbRun(`UPDATE orders SET split_groups = ? WHERE id = ?`, [JSON.stringify(grupos), id]);
+                    }
+                } catch (_) { /* división ilegible: el cobro sigue igual */ }
             }
 
             // Comparación y restas en centavos: pagar "exacto" siempre liquida la cuenta
@@ -587,6 +598,38 @@ const toggleInvoiceStatus = async (req, res) => {
     }
 };
 
+// Grupos de la cuenta por consumo: [{ name: 'Persona 1', items: [{ id, qty }] }]. Los guarda quien imprime
+// las cuentas parciales (mesero o caja) para que al cobrar se elija "Persona 1" de un toque en cualquier dispositivo.
+function sanitizeSplitGroups(groups) {
+    if (!Array.isArray(groups) || groups.length > 30) return null;
+    const clean = [];
+    for (const g of groups) {
+        if (!g || !Array.isArray(g.items) || g.items.length > 200) return null;
+        const items = [];
+        for (const it of g.items) {
+            const id = Number(it && it.id), qty = Number(it && it.qty);
+            if (!Number.isInteger(id) || id <= 0 || !Number.isInteger(qty) || qty < 1 || qty > 999) return null;
+            items.push({ id, qty });
+        }
+        clean.push({ name: String(g.name || `Persona ${clean.length + 1}`).slice(0, 40), items, ...(g.paid === true ? { paid: true } : {}) });
+    }
+    return clean;
+}
+
+const saveSplitGroups = async (req, res) => {
+    try {
+        const groups = sanitizeSplitGroups(req.body.groups);
+        if (!groups) return res.status(400).json({ error: 'División inválida.' });
+        const order = await dbGet(`SELECT status FROM orders WHERE id = ?`, [req.params.id]);
+        if (!order) return res.status(404).json({ error: 'Orden no encontrada' });
+        if (order.status !== 'ABIERTA') return res.status(409).json({ error: 'La cuenta ya fue cobrada.' });
+        await dbRun(`UPDATE orders SET split_groups = ? WHERE id = ?`, [groups.length ? JSON.stringify(groups) : null, req.params.id]);
+        res.json({ message: 'División guardada', groups });
+    } catch (err) {
+        sendError(res, err);
+    }
+};
+
 const updatePax = async (req, res) => {
     try {
         const { id } = req.params;
@@ -615,5 +658,6 @@ module.exports = {
     reopenOrder,
     toggleInvoiceStatus,
     updatePax,
-    updateOrderTotal // Exportado para pruebas unitarias
+    saveSplitGroups,
+    updateOrderTotal// Exportado para pruebas unitarias
 };

@@ -1018,3 +1018,39 @@ describe('Arranque de operación: integridad del historial y durabilidad', () =>
         assert.equal((await dbGet('PRAGMA synchronous')).synchronous, 2);
     });
 });
+
+describe('Cuenta por consumo: grupos por persona', () => {
+    const json = (method, body) => ({ method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    let tableId, productId, orderId, itemId;
+    before(async () => {
+        tableId = (await dbRun('INSERT INTO tables (table_number) VALUES (?)', [`SPLIT_${Date.now()}`])).lastID;
+        productId = (await dbRun(`INSERT INTO products (name, price, station, category) VALUES ('Cerveza', 45, 'BARRA', 'BEBIDAS')`)).lastID;
+        orderId = (await (await fetch(`${testBaseUrl}/api/orders`, json('POST', { table_id: tableId, waiter_name: 'Pedro', items: [{ product_id: productId, quantity: 6 }], is_printed: false }))).json()).orderId;
+        itemId = (await dbGet('SELECT id FROM order_items WHERE order_id = ?', [orderId])).id;
+    });
+    after(async () => {
+        await dbRun('DELETE FROM order_items WHERE order_id = ?', [orderId]);
+        await dbRun('DELETE FROM orders WHERE id = ?', [orderId]);
+        await dbRun('DELETE FROM tables WHERE id = ?', [tableId]);
+        await dbRun('DELETE FROM products WHERE id = ?', [productId]);
+    });
+
+    test('Se guardan y regresan con la cuenta; datos inválidos se rechazan', async () => {
+        const groups = [{ name: 'Persona 1', items: [{ id: itemId, qty: 2 }] }, { name: 'Persona 2', items: [{ id: itemId, qty: 4 }] }];
+        assert.equal((await fetch(`${testBaseUrl}/api/orders/${orderId}/split-groups`, json('PUT', { groups }))).status, 200);
+        const o = (await (await fetch(`${testBaseUrl}/api/orders/${orderId}`)).json()).order;
+        assert.deepEqual(JSON.parse(o.split_groups), groups);
+        assert.equal((await fetch(`${testBaseUrl}/api/orders/${orderId}/split-groups`, json('PUT', { groups: [{ items: [{ id: itemId, qty: -1 }] }] }))).status, 400);
+    });
+
+    test('Cobrar la Persona 1 y luego la Persona 2 (tarjeta y efectivo) cierra la cuenta exacta', async () => {
+        const p1 = await (await fetch(`${testBaseUrl}/api/orders/${orderId}/pay`, json('POST', { payment_method: 'TARJETA', amount_paid: 90, items_to_pay: [{ id: itemId, qty: 2 }] }))).json();
+        assert.equal(p1.fully_paid, false);
+        assert.equal(p1.remaining_balance, 180);
+        const p2 = await (await fetch(`${testBaseUrl}/api/orders/${orderId}/pay`, json('POST', { payment_method: 'EFECTIVO', amount_paid: 200, items_to_pay: [{ id: itemId, qty: 4 }] }))).json();
+        assert.equal(p2.fully_paid, true);
+        assert.equal(p2.change, 20);
+        const o = await dbGet('SELECT status, cash_amount, card_amount FROM orders WHERE id = ?', [orderId]);
+        assert.deepEqual(o, { status: 'PAGADA', cash_amount: 180, card_amount: 90 });
+    });
+});

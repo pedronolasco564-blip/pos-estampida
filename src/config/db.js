@@ -93,6 +93,8 @@ function initDatabase() {
         db.run(`ALTER TABLE products ADD COLUMN deleted INTEGER DEFAULT 0`, () => {});
         // Mesas borradas que tienen cuentas en el historial: se ocultan en vez de borrarse (el corte las sigue mostrando)
         db.run(`ALTER TABLE tables ADD COLUMN deleted INTEGER DEFAULT 0`, () => {});
+        // Cuenta por consumo: qué platillos le tocan a cada persona (se arma al imprimir sus cuentas parciales)
+        db.run(`ALTER TABLE orders ADD COLUMN split_groups TEXT`, () => {});
         // Envíos ya procesados (evita duplicar una orden si el celular reintenta tras perder el Wi-Fi)
         db.run(`CREATE TABLE IF NOT EXISTS request_log (id TEXT PRIMARY KEY, response TEXT NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP)`);
         db.run(`DELETE FROM request_log WHERE created_at < datetime('now', '-3 days')`);
